@@ -24,7 +24,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
 
       - name: Grant execute permission for gradlew
+        working-directory: ./DeanWave-Music
         run: chmod +x gradlew
 
       - name: Build Debug APK with DSP and App
+        working-directory: ./DeanWave-Music
         run: ./gradlew :app:assembleDebug
