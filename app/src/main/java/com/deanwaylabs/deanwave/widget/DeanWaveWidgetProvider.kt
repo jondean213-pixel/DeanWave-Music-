@@ -20,7 +20,7 @@ import com.deanwaylabs.deanwave.playback.PlaybackService
  * shows the truth without waking the phone on a schedule. The button
  * sends a toggle intent straight to the service, which owns playback.
  */
-class DeanWaveWidgetProvider : AppWidgetProvider {
+class DeanWaveWidgetProvider : AppWidgetProvider() {
 
     companion object {
         fun toggleIntent(context: Context): PendingIntent {
