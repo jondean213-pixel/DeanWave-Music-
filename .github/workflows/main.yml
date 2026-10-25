@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout Code
@@ -31,3 +33,11 @@ jobs:
 
       - name: Build Debug APK with DSP and App
         run: ./gradlew :app:assembleDebug
+
+      - name: Publish APK to dev-build release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view dev-build --repo ${{ github.repository }} >/dev/null 2>&1 || gh release create dev-build --repo ${{ github.repository }} --title "Latest dev build" --notes "Rolling dev build APK, updated on every green build."
+          gh release upload dev-build --repo ${{ github.repository }} --clobber app/build/outputs/apk/debug/app-debug.apk
