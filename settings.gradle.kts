@@ -14,5 +14,5 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "DeanWave-Music"
-include(":app", ":dsp")
+include(":app")
 
