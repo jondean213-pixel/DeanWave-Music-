@@ -104,7 +104,7 @@ object LyricsReader {
             pos = payloadEnd
         }
         if (!synced.isNullOrEmpty()) return LyricsResult.Synced(synced)
-        if (!unsynced.isNullOrEmpty()) return LyricsResult.Unsynced(unsynced)
+        if (!finalUnsynced.isNullOrEmpty()) return LyricsResult.Unsynced(finalUnsynced)
         return LyricsResult.None
     }
 
@@ -255,8 +255,12 @@ object LyricsReader {
                 "SYNCEDLYRICS" -> if (synced == null) synced = parseLrc(value)
             }
         }
-        if (!synced.isNullOrEmpty()) return LyricsResult.Synced(synced)
-        if (!unsynced.isNullOrEmpty()) return LyricsResult.Unsynced(unsynced)
+        // Copy out of the repeat closure first: the compiler cannot smart-cast
+        // locals captured by a changing closure.
+        val finalSynced = synced
+        val finalUnsynced = unsynced
+        if (!finalSynced.isNullOrEmpty()) return LyricsResult.Synced(finalSynced)
+        if (!finalUnsynced.isNullOrEmpty()) return LyricsResult.Unsynced(finalUnsynced)
         return LyricsResult.None
     }
 

@@ -94,7 +94,7 @@ class TorrentProxyServer(
         port = -1
     }
 
-    /** Largest prefix of [start..maxEnd] whose pieces are all downloaded. */
+    /** Largest prefix of the requested range whose pieces are all downloaded. */
     private fun contiguousEnd(start: Long, maxEnd: Long): Long {
         if (start > maxEnd) return start - 1
         if (!isAvailable(start, start)) return start - 1
@@ -233,7 +233,7 @@ class TorrentProxyServer(
         }
     }
 
-    /** Streams [start..end], waiting briefly for pieces as they arrive. */
+    /** Streams from start through end, waiting briefly for pieces as they arrive. */
     private fun streamProgressively(out: java.io.OutputStream, start: Long, end: Long) {
         var position = start
         var stallStart = -1L
