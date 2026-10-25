@@ -30,4 +30,4 @@ jobs:
         run: chmod +x gradlew
 
       - name: Build Debug APK with DSP and App
-        run: ./gradlew :app:assembleDebug --stacktrace
+        run: ./gradlew :app:assembleDebug
