@@ -10,7 +10,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var libraryScanner: LocalLibraryScanner
     private lateinit var torrentStreamer: TorrentStreamer
-    private val sessionManager = SessionManager.instance()
+    private val sessionManager = SessionManager()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

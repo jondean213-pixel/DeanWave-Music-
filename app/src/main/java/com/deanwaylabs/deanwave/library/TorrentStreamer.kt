@@ -2,35 +2,45 @@ package com.deanwaylabs.deanwave.library
 
 import com.frostwire.jlibtorrent.SessionManager
 import com.frostwire.jlibtorrent.TorrentHandle
-import com.frostwire.jlibtorrent.Priority
+import com.frostwire.jlibtorrent.TorrentInfo
+import java.io.File
 
 class TorrentStreamer(private val sessionManager: SessionManager) {
     private var currentHandle: TorrentHandle? = null
 
     // Connects to a torrent swarm and forces sequential streaming inside the app
     fun startAudioStream(magnetUrl: String, onStreamReady: (proxyUrl: String) -> Unit) {
-        // 1. Add the magnet link straight to the embedded session
-        currentHandle = sessionManager.download(magnetUrl, null)
-        
-        // 2. Override default P2P behavior and force sequential chunk downloading
-        currentHandle?.setSequentialDownload(true)
-        
-        // 3. Force maximum priority on the first 5% of files to skip initial buffering lag
+        // 1. Fetch the torrent metadata for the magnet link, then decode it.
+        // fetchMagnet blocks until metadata arrives (or times out), so call
+        // this off the main thread.
+        val metadata = sessionManager.fetchMagnet(magnetUrl, 30, File("/tmp")) ?: return
+        val torrentInfo = TorrentInfo.bdecode(metadata)
+
+        // 2. Add the torrent to the session. download() returns void, so the
+        // handle is looked up afterwards by info hash.
+        sessionManager.download(torrentInfo, File("/tmp"))
+        currentHandle = sessionManager.find(torrentInfo.infoHashV1())
+
+        // 3. Force the head of the file to download first: deadlines on the
+        // first pieces pull them ahead of the rest (libtorrent's streaming
+        // mechanism — piece deadlines, not a sequential flag, which this
+        // libtorrent version no longer offers as a handle method).
         prioritizeStartingPieces()
 
-        // 4. Return an internal localhost proxy path that ExoPlayer can play from
-        val localhostProxyUrl = "http://127.0.0{currentHandle?.infoHash()}"
+        // 4. Return an internal localhost proxy path that ExoPlayer can play from.
+        // NOTE: no local proxy server exists yet — this URL is a placeholder
+        // until one is built; nothing can play from it today.
+        val localhostProxyUrl = "http://127.0.0.1/${currentHandle?.infoHash()}"
         onStreamReady(localhostProxyUrl)
     }
 
     private fun prioritizeStartingPieces() {
         val handle = currentHandle ?: return
         val totalPieces = handle.torrentFile()?.numPieces() ?: return
-        
-        // Push maximum download priority on the initial tracks
+
+        // Push deadlines on the initial tracks to skip initial buffering lag
         for (i in 0 until minOf(10, totalPieces)) {
             handle.setPieceDeadline(i, 1000)
-            handle.setPiecePriority(i, Priority.SEVEN)
         }
     }
 

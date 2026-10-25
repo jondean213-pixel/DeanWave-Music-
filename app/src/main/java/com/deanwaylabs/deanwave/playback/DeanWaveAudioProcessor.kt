@@ -36,7 +36,7 @@ class DeanWaveAudioProcessor : AudioProcessor {
         outputFormat = AudioFormat(
             inputAudioFormat.sampleRate,
             inputAudioFormat.channelCount,
-            AudioFormat.ENCODING_PCM_FLOAT
+            C.ENCODING_PCM_FLOAT
         )
         engine.configure(inputAudioFormat.sampleRate, inputAudioFormat.channelCount)
         return outputFormat
