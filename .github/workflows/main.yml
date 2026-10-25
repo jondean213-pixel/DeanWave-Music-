@@ -14,6 +14,9 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Show Workspace Files
+        run: ls -la
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -22,14 +25,9 @@ jobs:
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
-        with:
-          build-root-directory: ./DeanWave-Music
 
       - name: Grant execute permission for gradlew
-        working-directory: ./DeanWave-Music
         run: chmod +x gradlew
 
       - name: Build Debug APK with DSP and App
-        working-directory: ./DeanWave-Music
         run: ./gradlew :app:assembleDebug
-        
