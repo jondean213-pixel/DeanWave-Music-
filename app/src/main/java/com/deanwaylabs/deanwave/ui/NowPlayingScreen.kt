@@ -1,113 +1,530 @@
 package com.deanwaylabs.deanwave.ui
 
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.SkipNext
+import androidx.compose.material.icons.filled.SkipPrevious
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.session.MediaController
+import com.deanwaylabs.deanwave.dsp.Presets
+import com.deanwaylabs.deanwave.library.ArtistBio
+import com.deanwaylabs.deanwave.library.LocalLibraryScanner
+import com.deanwaylabs.deanwave.library.LocalTrack
+import com.deanwaylabs.deanwave.library.LyricsResult
+import com.deanwaylabs.deanwave.library.MusicBrainzClient
+import com.deanwaylabs.deanwave.library.loadLyricsForTrack
+import com.deanwaylabs.deanwave.playback.EngineCommands
+import com.deanwaylabs.deanwave.playback.LocalSourceResolver
+import com.deanwaylabs.deanwave.playback.PlaybackSource
+import java.util.concurrent.Executor
+import java.util.concurrent.atomic.AtomicBoolean
 
-// Brand Colors from DeanWay Design Guidelines
-val DeanWayNavy = Color(0xFF0B1F3A)
-val DeanWayGold = Color(0xFFC9A227)
-
+/**
+ * Now-playing screen in DeanWay navy/gold, wired to the service.
+ *
+ * Playback phase wiring (kept): transport buttons drive the MediaController
+ * (standard Player commands), preset chips and the bypass switch drive the
+ * service's sound engine through MediaSession custom commands
+ * ([EngineCommands]), album art sits centered in a gold frame.
+ *
+ * This phase adds:
+ * - The beam visualizer behind the art: gold beams radiating and pulsing
+ *   plus the drifting Circle D, drawn from the engine's live per-band
+ *   energies, polled at ~30 Hz while playing through a custom command.
+ *   When playback pauses, polling stops and the beams settle to their
+ *   faint base glow.
+ * - Lyrics from the file's own tags (synced window following the playing
+ *   position, unsynced as text, honest "none" line otherwise).
+ * - Band biography from MusicBrainz (formed year included) or an honest
+ *   "unavailable" line — never fabricated.
+ * - A download-to-Drive section (account connection still pending).
+ *
+ * The column scrolls: lyrics, bio, and download sections live below the
+ * sound controls. Polling uses plain Handlers, the pattern this app
+ * already uses — no new dependencies.
+ *
+ * Still later: Drive streaming, online streaming, catalog browsing UI,
+ * two-way engine state sync.
+ *
+ * DeanWave-Music- additions (the only changes from last night):
+ * - A Library section: scan the phone/SD card on demand and tap any
+ *   track to queue the whole scan and play it, through the same
+ *   LocalSourceResolver the service uses at startup.
+ * - A Torrent stream section: paste a magnet link, tap Stream, and the
+ *   activity's TorrentStreamer + localhost proxy feed the URL to the
+ *   player. The screen itself never touches the torrent engine; it
+ *   reports the activity's [torrentStatus] honestly.
+ */
 @Composable
 fun NowPlayingScreen(
-    currentTrackTitle: String = "No Track Loaded",
-    currentArtist: String = "Unknown Artist",
-    onPlayPauseClicked: () -> Unit = {},
-    onLocalScanRequested: () -> Unit = {}
+    controller: MediaController?,
+    onTorrentStream: (String) -> Unit = {},
+    torrentStatus: String = ""
 ) {
-    val scrollState = rememberScrollState()
+    val context = LocalContext.current
+    val scanHandler = remember { Handler(Looper.getMainLooper()) }
+    var isPlaying by remember { mutableStateOf(false) }
+    var currentItem by remember { mutableStateOf<MediaItem?>(null) }
+    var selectedPreset by remember { mutableStateOf(Presets.FLAT.name) }
+    var bypass by remember { mutableStateOf(false) }
+    var energies by remember { mutableStateOf(FloatArray(8)) }
+    var positionMs by remember { mutableStateOf(0L) }
+    var lyrics by remember { mutableStateOf<LyricsResult?>(null) }
+    var bio by remember { mutableStateOf<ArtistBio?>(null) }
+    var bioLoadedFor by remember { mutableStateOf<String?>(null) }
+    var libraryTracks by remember { mutableStateOf<List<LocalTrack>>(emptyList()) }
+    var libraryStatus by remember { mutableStateOf("") }
+    var scanning by remember { mutableStateOf(false) }
+    var magnet by remember { mutableStateOf("") }
+
+    DisposableEffect(controller) {
+        if (controller == null) {
+            onDispose { }
+        } else {
+            val listener = object : Player.Listener {
+                override fun onIsPlayingChanged(playing: Boolean) {
+                    isPlaying = playing
+                }
+
+                override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+                    currentItem = mediaItem
+                }
+            }
+            controller.addListener(listener)
+            isPlaying = controller.isPlaying
+            currentItem = controller.currentMediaItem
+            onDispose { controller.removeListener(listener) }
+        }
+    }
+
+    // Beam polling: ~30 Hz sampled reads of the engine's band energies
+    // while playing. Pausing stops the loop and settles the beams.
+    DisposableEffect(controller, isPlaying) {
+        val handler = Handler(Looper.getMainLooper())
+        var stopped = false
+        val mainExecutor = Executor { runnable -> handler.post(runnable) }
+        val poll = object : Runnable {
+            override fun run() {
+                if (stopped) return
+                val c = controller
+                if (c != null) {
+                    try {
+                        val future = c.sendCustomCommand(
+                            EngineCommands.getBandEnergiesCommand(),
+                            Bundle.EMPTY
+                        )
+                        future.addListener(
+                            {
+                                try {
+                                    val arr = future.get().extras
+                                        ?.getFloatArray(EngineCommands.ARG_ENERGIES)
+                                    if (arr != null) energies = arr
+                                } catch (_: Exception) {
+                                    // A missed sample is harmless; the next one follows.
+                                }
+                            },
+                            mainExecutor
+                        )
+                    } catch (_: Exception) {
+                        // Command send failed; the next tick retries.
+                    }
+                }
+                handler.postDelayed(this, 33)
+            }
+        }
+        if (isPlaying) {
+            handler.post(poll)
+        } else {
+            energies = FloatArray(8)
+        }
+        onDispose {
+            stopped = true
+            handler.removeCallbacks(poll)
+        }
+    }
+
+    // Lyric position polling: four reads a second while playing is plenty
+    // for line timing, and pausing freezes the highlighted line in place.
+    DisposableEffect(controller, isPlaying) {
+        val handler = Handler(Looper.getMainLooper())
+        var stopped = false
+        val poll = object : Runnable {
+            override fun run() {
+                if (stopped) return
+                controller?.let { positionMs = it.currentPosition }
+                handler.postDelayed(this, 250)
+            }
+        }
+        if (isPlaying) handler.post(poll)
+        onDispose {
+            stopped = true
+            handler.removeCallbacks(poll)
+        }
+    }
+
+    val metadata = currentItem?.mediaMetadata
+    val title = metadata?.title?.toString() ?: "No track selected"
+    val artist = metadata?.artist?.toString()
+        ?: if (currentItem == null) "Your library, your Drive, your sound." else ""
+    val artUri = currentItem?.localConfiguration?.uri?.toString()
+    // The tagline shown with no track is not an artist — never look it up.
+    val bioArtistName = if (currentItem == null) "" else artist
+
+    // Lyrics load on track change, on a background thread.
+    DisposableEffect(artUri) {
+        val disposed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        lyrics = null
+        if (artUri != null) {
+            Thread {
+                val loaded = loadLyricsForTrack(context, artUri)
+                if (!disposed.get()) handler.post { lyrics = loaded }
+            }.start()
+        }
+        onDispose { disposed.set(true) }
+    }
+
+    // Bio load on artist change, on a background thread (rate-limited and
+    // cached inside the client, so repeat views cost nothing).
+    DisposableEffect(bioArtistName) {
+        val disposed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        bio = null
+        bioLoadedFor = null
+        if (bioArtistName.isNotEmpty()) {
+            Thread {
+                val loaded = MusicBrainzClient(context).lookupArtist(bioArtistName)
+                if (!disposed.get()) {
+                    handler.post {
+                        bio = loaded
+                        bioLoadedFor = bioArtistName
+                    }
+                }
+            }.start()
+        }
+        onDispose { disposed.set(true) }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(DeanWayNavy)
-            .padding(24.dp)
-            .verticalScroll(scrollState),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Top
+            .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState())
+            .padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(40.dp))
-
-        // Center Brand Identifier Header
-        Text(
-            text = "DEANWAVE",
-            color = DeanWayGold,
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            letterSpacing = 4.sp
-        )
-
-        Spacer(modifier = Modifier.height(60.dp))
-
-        // Placeholder Area for Gold Equalizer Audio Beams and Centered Artwork
+        Spacer(modifier = Modifier.height(16.dp))
         Box(
-            modifier = Modifier
-                .size(260.dp)
-                .background(Color(0x1AC9A227)),
+            modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.Center
         ) {
-            // Audio-reactive visualizer and brand icon drift behind this area
-            Text(
-                text = "Audio Beam Active",
-                color = DeanWayGold.copy(alpha = 0.6f),
-                fontSize = 14.sp
+            BeamVisualizer(
+                energies = energies,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(380.dp)
             )
+            CenteredAlbumArt(uriString = artUri)
         }
+        Spacer(modifier = Modifier.height(16.dp))
 
-        Spacer(modifier = Modifier.height(40.dp))
-
-        // Track Information Details
-        Text(
-            text = currentTrackTitle,
-            color = Color.White,
-            fontSize = 22.sp,
-            fontWeight = FontWeight.SemiBold
-        )
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        Text(
-            text = currentArtist,
-            color = DeanWayGold,
-            fontSize = 16.sp
-        )
-
-        Spacer(modifier = Modifier.height(60.dp))
-
-        // Integrated Native Music Controls
-        Row(
+        Card(
             modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.Center,
-            verticalAlignment = Alignment.CenterVertically
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surface
+            )
         ) {
-            Button(
-                onClick = onPlayPauseClicked,
-                colors = ButtonDefaults.buttonColors(containerColor = DeanWayGold)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                Text(text = "PLAY / PAUSE", color = DeanWayNavy, fontWeight = FontWeight.Bold)
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.Center
+                )
+                if (artist.isNotEmpty()) {
+                    Text(
+                        text = artist,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    IconButton(
+                        enabled = controller != null,
+                        onClick = { controller?.seekToPrevious() }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SkipPrevious,
+                            contentDescription = "Previous",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                    IconButton(
+                        enabled = controller != null,
+                        onClick = {
+                            if (isPlaying) controller?.pause() else controller?.play()
+                        }
+                    ) {
+                        Icon(
+                            imageVector = if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                            contentDescription = if (isPlaying) "Pause" else "Play",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(48.dp)
+                        )
+                    }
+                    IconButton(
+                        enabled = controller != null,
+                        onClick = { controller?.seekToNext() }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.SkipNext,
+                            contentDescription = "Next",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
             }
         }
 
-        Spacer(modifier = Modifier.height(80.dp))
-
-        // Local Storage Utilities Section
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Library",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
         Button(
-            onClick = onLocalScanRequested,
-            colors = ButtonDefaults.buttonColors(containerColor = Color.Transparent),
+            enabled = !scanning,
+            onClick = {
+                scanning = true
+                libraryStatus = ""
+                Thread {
+                    val tracks = try {
+                        LocalLibraryScanner(context).scan()
+                    } catch (_: Exception) {
+                        emptyList()
+                    }
+                    scanHandler.post {
+                        libraryTracks = tracks
+                        libraryStatus = if (tracks.isEmpty()) {
+                            "No local tracks found."
+                        } else {
+                            "${tracks.size} local tracks found — tap one to play."
+                        }
+                        scanning = false
+                    }
+                }.start()
+            }
+        ) {
+            Text(if (scanning) "Scanning…" else "SCAN LIBRARY")
+        }
+        if (libraryStatus.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = libraryStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        val tracksSnapshot = libraryTracks
+        if (tracksSnapshot.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            val shown = tracksSnapshot.take(100)
+            for ((index, track) in shown.withIndex()) {
+                Text(
+                    text = "${track.title} — ${track.artist}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable {
+                            val c = controller ?: return@clickable
+                            val resolver = LocalSourceResolver(tracksSnapshot)
+                            val items = tracksSnapshot.map { t ->
+                                resolver.resolve(PlaybackSource.LocalFile(t.uriString))
+                            }
+                            c.setMediaItems(items, index, 0)
+                            c.prepare()
+                            c.play()
+                        }
+                        .padding(vertical = 4.dp)
+                )
+            }
+            if (tracksSnapshot.size > shown.size) {
+                Text(
+                    text = "…and ${tracksSnapshot.size - shown.size} more",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Sound",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text(text = "SCAN LOCAL DRIVE & SD CARD", color = DeanWayGold, fontSize = 14.sp)
+            for (preset in Presets.all()) {
+                FilterChip(
+                    selected = selectedPreset == preset.name,
+                    onClick = {
+                        selectedPreset = preset.name
+                        controller?.sendCustomCommand(
+                            EngineCommands.applyPresetCommand(),
+                            EngineCommands.applyPresetArgs(preset.name)
+                        )
+                    },
+                    label = { Text(preset.name) }
+                )
+            }
         }
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Bypass engine (A/B)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = bypass,
+                onCheckedChange = { checked ->
+                    bypass = checked
+                    controller?.sendCustomCommand(
+                        EngineCommands.setBypassCommand(),
+                        EngineCommands.setBypassArgs(checked)
+                    )
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Torrent stream",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        OutlinedTextField(
+            value = magnet,
+            onValueChange = { magnet = it },
+            label = { Text("Magnet link") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Button(
+            enabled = magnet.isNotBlank(),
+            onClick = { onTorrentStream(magnet.trim()) }
+        ) {
+            Text("STREAM TORRENT")
+        }
+        if (torrentStatus.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = torrentStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
+        lyrics?.let { loaded ->
+            Spacer(modifier = Modifier.height(32.dp))
+            Text(
+                text = "Lyrics",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            LyricsDisplay(lyrics = loaded, positionMs = positionMs)
+        }
+
+        if (bioArtistName.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(32.dp))
+            Text(
+                text = "About the artist",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            if (bioLoadedFor == bioArtistName) {
+                ArtistBioSection(artistName = bioArtistName, bio = bio)
+            } else {
+                Text(
+                    text = "Looking up…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        DownloadSection()
+        Spacer(modifier = Modifier.height(16.dp))
     }
 }

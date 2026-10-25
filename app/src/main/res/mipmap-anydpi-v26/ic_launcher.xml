@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Adaptive launcher icon. Foreground is the DeanWave mark (gold equalizer bars);
+     the mark's own background is navy, so it blends with the navy background layer.
+     Later polish: a transparent-background version of the mark so adaptive masking
+     (circle/squircle) crops cleanly at every shape. -->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/deanway_navy" />
+    <foreground android:drawable="@drawable/ic_launcher_foreground" />
+</adaptive-icon>

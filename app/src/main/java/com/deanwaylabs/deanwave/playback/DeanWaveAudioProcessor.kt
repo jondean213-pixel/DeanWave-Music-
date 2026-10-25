@@ -8,21 +8,51 @@ import com.deanwaylabs.deanwave.dsp.SoundEngine
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : AudioProcessor {
-
-    // Our sound engine: preamp -> 8-band parametric EQ -> bass boost -> limiter.
-    // Default bands are flat (0 dB), so sound passes through unchanged until
-    // bands are set or a preset is applied. The engine comes from the caller
-    // (PlaybackService) so there is exactly one engine in the audio chain.
+/**
+ * Media3 [AudioProcessor] that runs DeanWave's custom DSP sound engine over
+ * decoded PCM.
+ *
+ * This is the "better than Android's Equalizer" part: the app processes
+ * samples itself (parametric EQ, bass boost, limiter) instead of using the
+ * system's fixed-band effect. Because it sits in the Media3 audio chain,
+ * every source — Drive streams, local files, online streams — passes through
+ * the same engine on playback.
+ *
+ * Why a Media3 AudioProcessor and not Oboe (documented choice):
+ * playback already runs through Media3/ExoPlayer for every source, so the
+ * processor keeps one pipeline for decoding, streaming, and DSP. Oboe would
+ * mean a second native audio path plus reimplementing decoding and
+ * streaming. Oboe stays an option only if ultra-low-latency monitoring is
+ * ever needed, which a music player does not need.
+ *
+ * Supported input encodings: 16-bit PCM (the ExoPlayer default), 24-bit PCM,
+ * 32-bit PCM, and float PCM. The output encoding always matches the input,
+ * so 24-bit lossless stays 24-bit through the engine — and float stays
+ * float, which carries 24-bit integer samples exactly (float's 24-bit
+ * mantissa). One precision note: the DSP works in float internally, so
+ * 32-bit int samples are float-rounded on the way in (inaudible LSB loss);
+ * 24-bit int fits float's mantissa exactly, so it round-trips bit-exact. The DSP math itself already works on FloatArray frames
+ * internally, so this upgrade is purely input/output conversion; no DSP
+ * code changed for it. Anything else throws [UnhandledAudioFormatException].
+ *
+ * Bit-depth honesty: whether 24-bit reaches this processor depends on the
+ * decoder's output on the device. PlaybackService enables float decoder
+ * output (DefaultRenderersFactory.setEnableAudioFloatOutput), so decoders
+ * that support it deliver float, and the processor keeps it float. The
+ * Bluetooth ceiling still applies downstream — the phone re-encodes to the
+ * earbuds' codec (AAC on the Bose buds) — but the engine itself no longer
+ * narrows the audio before that point.
+ */
+class DeanWaveAudioProcessor(
+    private val engine: SoundEngine
+) : AudioProcessor {
 
     private var inputFormat = AudioFormat.NOT_SET
     private var outputFormat = AudioFormat.NOT_SET
-    private var outputBuffer: ByteBuffer = AudioProcessor.EMPTY_BUFFER
+    private var outputBuffer = AudioProcessor.EMPTY_BUFFER
     private var inputEnded = false
 
     override fun configure(inputAudioFormat: AudioFormat): AudioFormat {
-        // Accept 16-bit, 24-bit, 32-bit, and Float PCM format configurations.
-        // Anything else is refused so the sink can try another format.
         when (inputAudioFormat.encoding) {
             C.ENCODING_PCM_16BIT,
             C.ENCODING_PCM_24BIT,
@@ -31,24 +61,15 @@ class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : 
             else -> throw UnhandledAudioFormatException(inputAudioFormat)
         }
         inputFormat = inputAudioFormat
-        // Output is always float PCM: the engine works in float, and float
-        // carries 24-bit integer samples exactly (24-bit mantissa).
-        outputFormat = AudioFormat(
-            inputAudioFormat.sampleRate,
-            inputAudioFormat.channelCount,
-            C.ENCODING_PCM_FLOAT
-        )
+        outputFormat = inputAudioFormat
         engine.configure(inputAudioFormat.sampleRate, inputAudioFormat.channelCount)
         return outputFormat
     }
 
-    override fun isActive(): Boolean {
-        return inputFormat != AudioFormat.NOT_SET
-    }
+    override fun isActive(): Boolean = outputFormat != AudioFormat.NOT_SET
 
     override fun queueInput(inputBuffer: ByteBuffer) {
         if (!isActive() || !inputBuffer.hasRemaining()) return
-
         val channelCount = inputFormat.channelCount
         val bytesPerSample = when (inputFormat.encoding) {
             C.ENCODING_PCM_16BIT -> 2
@@ -60,7 +81,7 @@ class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : 
         // Decoders deliver whole frames; a trailing partial frame is dropped.
         val frames = bytes / (bytesPerSample * channelCount)
         val input = inputBuffer.order(ByteOrder.LITTLE_ENDIAN)
-        val out = ByteBuffer.allocate(frames * channelCount * 4)
+        val out = ByteBuffer.allocate(frames * bytesPerSample * channelCount)
             .order(ByteOrder.LITTLE_ENDIAN)
         val frame = FloatArray(channelCount)
         repeat(frames) {
@@ -72,11 +93,27 @@ class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : 
                     else -> input.float // ENCODING_PCM_FLOAT
                 }
             }
-            // Process audio bytes and route through the custom DSP chain here
-            // (Preamp -> 8-band parametric EQ -> Bass Boost -> Limiter)
             engine.processFrame(frame)
             for (channel in frame.indices) {
-                out.putFloat(frame[channel])
+                when (inputFormat.encoding) {
+                    C.ENCODING_PCM_16BIT -> {
+                        val pcm = (frame[channel] * 32767f).toInt()
+                            .coerceIn(-32768, 32767)
+                        out.putShort(pcm.toShort())
+                    }
+                    C.ENCODING_PCM_24BIT -> {
+                        val pcm = (frame[channel] * 8388607f).toInt()
+                            .coerceIn(-8388608, 8388607)
+                        write24Bit(out, pcm)
+                    }
+                    C.ENCODING_PCM_32BIT -> {
+                        val pcm = (frame[channel].toDouble() * 2147483647.0)
+                            .toInt()
+                            .coerceIn(Int.MIN_VALUE, Int.MAX_VALUE)
+                        out.putInt(pcm)
+                    }
+                    else -> out.putFloat(frame[channel]) // float passthrough
+                }
             }
         }
         out.flip()
@@ -91,26 +128,29 @@ class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : 
         return low or (mid shl 8) or (high shl 16)
     }
 
+    /** Writes one little-endian 24-bit signed sample. */
+    private fun write24Bit(out: ByteBuffer, value: Int) {
+        out.put((value and 0xFF).toByte())
+        out.put(((value shr 8) and 0xFF).toByte())
+        out.put(((value shr 16) and 0xFF).toByte())
+    }
+
     override fun queueEndOfStream() {
-        // Do not clear the output here: let getOutput() drain the last
-        // processed buffer first, or the tail of the track gets dropped.
         inputEnded = true
     }
 
     override fun getOutput(): ByteBuffer {
-        val output = outputBuffer
+        val out = outputBuffer
         outputBuffer = AudioProcessor.EMPTY_BUFFER
-        return output
+        return out
     }
 
-    override fun isEnded(): Boolean {
-        return inputEnded && outputBuffer == AudioProcessor.EMPTY_BUFFER
-    }
+    override fun isEnded(): Boolean =
+        inputEnded && outputBuffer == AudioProcessor.EMPTY_BUFFER
 
     override fun flush() {
         outputBuffer = AudioProcessor.EMPTY_BUFFER
         inputEnded = false
-        engine.reset()
     }
 
     override fun reset() {

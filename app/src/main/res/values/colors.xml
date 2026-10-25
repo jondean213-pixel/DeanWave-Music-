@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- DeanWay brand colors -->
+    <color name="deanway_navy">#0B1F3A</color>
+    <!-- Derived surface shade (navy lightened for cards/panels). -->
+    <color name="deanway_navy_light">#16305A</color>
+    <color name="deanway_gold">#C9A227</color>
+    <color name="deanway_white">#FFFFFF</color>
+</resources>
