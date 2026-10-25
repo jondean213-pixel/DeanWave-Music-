@@ -47,8 +47,13 @@ dependencies {
     implementation("androidx.media3:media3-exoplayer:1.5.1")
     implementation("androidx.media3:media3-session:1.5.1")
 
-    // Torrent engine (TorrentStreamer)
-    implementation("com.frostwire:jlibtorrent:2.0.0.19")
+    // Torrent engine (TorrentStreamer) — FrostWire's own Maven repo,
+    // version 2.0.12.9 = latest published release. Java wrappers + all four Android ABIs.
+    implementation("com.frostwire:jlibtorrent:2.0.12.9")
+    implementation("com.frostwire:jlibtorrent-android-arm:2.0.12.9")
+    implementation("com.frostwire:jlibtorrent-android-arm64:2.0.12.9")
+    implementation("com.frostwire:jlibtorrent-android-x86:2.0.12.9")
+    implementation("com.frostwire:jlibtorrent-android-x86_64:2.0.12.9")
 
     // DeanWave sound engine (our DSP blueprint)
     implementation(project(":dsp"))
