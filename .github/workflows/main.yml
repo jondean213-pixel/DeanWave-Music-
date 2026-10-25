@@ -22,9 +22,9 @@ jobs:
 
       - name: Generate Gradle Wrapper On-The-Fly
         run: |
-          wget https://services.gradle.org/distributions/gradle-8.7-bin.zip -q
-          unzip -q gradle-8.7-bin.zip
-          ./gradle-8.7/bin/gradle wrapper --gradle-version 8.7
+          wget https://services.gradle.org/distributions/gradle-8.9-bin.zip -q
+          unzip -q gradle-8.9-bin.zip
+          ./gradle-8.9/bin/gradle wrapper --gradle-version 8.9
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
