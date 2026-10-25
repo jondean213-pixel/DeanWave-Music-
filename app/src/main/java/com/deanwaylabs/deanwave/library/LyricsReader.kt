@@ -104,7 +104,7 @@ object LyricsReader {
             pos = payloadEnd
         }
         if (!synced.isNullOrEmpty()) return LyricsResult.Synced(synced)
-        if (!finalUnsynced.isNullOrEmpty()) return LyricsResult.Unsynced(finalUnsynced)
+        if (!unsynced.isNullOrEmpty()) return LyricsResult.Unsynced(unsynced)
         return LyricsResult.None
     }
 
