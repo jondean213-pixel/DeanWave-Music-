@@ -49,4 +49,7 @@ dependencies {
 
     // Torrent engine (TorrentStreamer)
     implementation("com.frostwire:jlibtorrent:2.0.0.19")
+
+    // DeanWave sound engine (our DSP blueprint)
+    implementation(project(":dsp"))
 }
