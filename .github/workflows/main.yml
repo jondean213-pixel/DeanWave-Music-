@@ -31,3 +31,4 @@ jobs:
 
       - name: Build Debug APK with DSP and App
         run: ./gradlew :app:assembleDebug
+        
