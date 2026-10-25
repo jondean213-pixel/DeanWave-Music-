@@ -26,7 +26,9 @@ class PlaybackService : MediaSessionService() {
         // The engine enters the audio chain through the renderers factory.
         // ExoPlayer.Builder has no setAudioSink in Media3 1.5, so the
         // factory's buildAudioSink hook is the injection point.
-        val processor = DeanWaveAudioProcessor()
+        // The service's engine is passed in, so it is the one engine that
+        // actually hears the music (no second engine in the processor).
+        val processor = DeanWaveAudioProcessor(engine)
         val renderersFactory = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(
                 context: Context,

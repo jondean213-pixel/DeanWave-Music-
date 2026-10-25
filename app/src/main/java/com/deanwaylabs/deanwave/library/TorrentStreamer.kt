@@ -5,7 +5,7 @@ import com.frostwire.jlibtorrent.TorrentHandle
 import com.frostwire.jlibtorrent.TorrentInfo
 import java.io.File
 
-class TorrentStreamer(private val sessionManager: SessionManager) {
+class TorrentStreamer(private val sessionManager: SessionManager, private val downloadDir: File) {
     private var currentHandle: TorrentHandle? = null
 
     // Connects to a torrent swarm and forces sequential streaming inside the app
@@ -13,12 +13,12 @@ class TorrentStreamer(private val sessionManager: SessionManager) {
         // 1. Fetch the torrent metadata for the magnet link, then decode it.
         // fetchMagnet blocks until metadata arrives (or times out), so call
         // this off the main thread.
-        val metadata = sessionManager.fetchMagnet(magnetUrl, 30, File("/tmp")) ?: return
+        val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir) ?: return
         val torrentInfo = TorrentInfo.bdecode(metadata)
 
         // 2. Add the torrent to the session. download() returns void, so the
         // handle is looked up afterwards by info hash.
-        sessionManager.download(torrentInfo, File("/tmp"))
+        sessionManager.download(torrentInfo, downloadDir)
         currentHandle = sessionManager.find(torrentInfo.infoHashV1())
 
         // 3. Force the head of the file to download first: deadlines on the

@@ -8,12 +8,12 @@ import com.deanwaylabs.deanwave.dsp.SoundEngine
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
-class DeanWaveAudioProcessor : AudioProcessor {
+class DeanWaveAudioProcessor(private val engine: SoundEngine = SoundEngine()) : AudioProcessor {
 
     // Our sound engine: preamp -> 8-band parametric EQ -> bass boost -> limiter.
     // Default bands are flat (0 dB), so sound passes through unchanged until
-    // bands are set or a preset is applied.
-    private val engine = SoundEngine()
+    // bands are set or a preset is applied. The engine comes from the caller
+    // (PlaybackService) so there is exactly one engine in the audio chain.
 
     private var inputFormat = AudioFormat.NOT_SET
     private var outputFormat = AudioFormat.NOT_SET
