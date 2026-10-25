@@ -31,6 +31,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
+import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -94,6 +95,12 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   activity's TorrentStreamer + localhost proxy feed the URL to the
  *   player. The screen itself never touches the torrent engine; it
  *   reports the activity's [torrentStatus] honestly.
+ * - Perfect-app additions: Space controls (reverb mix, stereo width,
+ *   AGC switch) driving the live engine through custom commands, and a
+ *   sleep timer whose deadline lives in the service. The widget and the
+ *   lock-screen controls live outside this screen — the widget on the
+ *   home screen, the lock-screen transport in the system media
+ *   notification driven by the same MediaSession.
  */
 @Composable
 fun NowPlayingScreen(
@@ -107,6 +114,12 @@ fun NowPlayingScreen(
     var currentItem by remember { mutableStateOf<MediaItem?>(null) }
     var selectedPreset by remember { mutableStateOf(Presets.FLAT.name) }
     var bypass by remember { mutableStateOf(false) }
+    var reverbMix by remember { mutableStateOf(0f) }
+    var wideAmount by remember { mutableStateOf(0f) }
+    var agcEnabled by remember { mutableStateOf(false) }
+    var sleepMinutes by remember { mutableStateOf(0) }
+    var sleepRemainingMs by remember { mutableStateOf(0L) }
+    var sleepActive by remember { mutableStateOf(false) }
     var energies by remember { mutableStateOf(FloatArray(8)) }
     var positionMs by remember { mutableStateOf(0L) }
     var lyrics by remember { mutableStateOf<LyricsResult?>(null) }
@@ -196,6 +209,55 @@ fun NowPlayingScreen(
             }
         }
         if (isPlaying) handler.post(poll)
+        onDispose {
+            stopped = true
+            handler.removeCallbacks(poll)
+        }
+    }
+
+    // Sleep timer polling: every 5 seconds while a timer is set, so the
+    // "stops in" line counts down and the chips reset to Off on expiry.
+    DisposableEffect(controller, sleepMinutes) {
+        val handler = Handler(Looper.getMainLooper())
+        var stopped = false
+        val mainExecutor = Executor { runnable -> handler.post(runnable) }
+        val poll = object : Runnable {
+            override fun run() {
+                if (stopped) return
+                val c = controller
+                if (c != null) {
+                    try {
+                        val future = c.sendCustomCommand(
+                            EngineCommands.getSleepRemainingCommand(),
+                            Bundle.EMPTY
+                        )
+                        future.addListener(
+                            {
+                                try {
+                                    val extras = future.get().extras
+                                    if (extras != null) {
+                                        sleepRemainingMs = extras.getLong(
+                                            EngineCommands.ARG_SLEEP_REMAINING_MS, 0L
+                                        )
+                                        sleepActive = extras.getBoolean(
+                                            EngineCommands.ARG_SLEEP_ACTIVE, false
+                                        )
+                                        if (!sleepActive) sleepMinutes = 0
+                                    }
+                                } catch (_: Exception) {
+                                    // A missed sample is harmless; the next one follows.
+                                }
+                            },
+                            mainExecutor
+                        )
+                    } catch (_: Exception) {
+                        // Command send failed; the next tick retries.
+                    }
+                }
+                handler.postDelayed(this, 5000)
+            }
+        }
+        if (sleepMinutes > 0) handler.post(poll)
         onDispose {
             stopped = true
             handler.removeCallbacks(poll)
@@ -460,6 +522,128 @@ fun NowPlayingScreen(
             )
         }
 
+        // Space controls: live engine effects, not decorations. Each one
+        // sends a custom command to the service's engine — the slider
+        // moves locally while dragging and lands on release, the AGC
+        // switch lands immediately.
+        Spacer(modifier = Modifier.height(16.dp))
+        Text(
+            text = "Space",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Reverb",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${(reverbMix * 100).toInt()}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Slider(
+            value = reverbMix,
+            onValueChange = { reverbMix = it },
+            onValueChangeFinished = {
+                controller?.sendCustomCommand(
+                    EngineCommands.setReverbMixCommand(),
+                    EngineCommands.setReverbMixArgs(reverbMix)
+                )
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "Wide (stereo)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            Text(
+                text = "${(wideAmount * 100).toInt()}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        Slider(
+            value = wideAmount,
+            onValueChange = { wideAmount = it },
+            onValueChangeFinished = {
+                controller?.sendCustomCommand(
+                    EngineCommands.setWideAmountCommand(),
+                    EngineCommands.setWideAmountArgs(wideAmount)
+                )
+            },
+            modifier = Modifier.fillMaxWidth()
+        )
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text(
+                text = "AGC (even volume)",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onBackground,
+                modifier = Modifier.weight(1f)
+            )
+            Switch(
+                checked = agcEnabled,
+                onCheckedChange = { checked ->
+                    agcEnabled = checked
+                    controller?.sendCustomCommand(
+                        EngineCommands.setAgcEnabledCommand(),
+                        EngineCommands.setAgcEnabledArgs(checked)
+                    )
+                }
+            )
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Sleep timer",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            for (option in listOf(0, 15, 30, 60)) {
+                FilterChip(
+                    selected = sleepMinutes == option,
+                    onClick = {
+                        sleepMinutes = option
+                        controller?.sendCustomCommand(
+                            EngineCommands.setSleepTimerCommand(),
+                            EngineCommands.setSleepTimerArgs(option.toLong())
+                        )
+                    },
+                    label = { Text(if (option == 0) "Off" else "$option min") }
+                )
+            }
+        }
+        if (sleepActive) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Stops in ${formatSleepRemaining(sleepRemainingMs)}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+
         Spacer(modifier = Modifier.height(32.dp))
         Text(
             text = "Torrent stream",
@@ -527,4 +711,12 @@ fun NowPlayingScreen(
         DownloadSection()
         Spacer(modifier = Modifier.height(16.dp))
     }
+}
+
+/** Sleep countdown as m:ss, e.g. 27:04. */
+private fun formatSleepRemaining(remainingMs: Long): String {
+    val totalSeconds = (remainingMs / 1000).coerceAtLeast(0L)
+    val minutes = totalSeconds / 60
+    val seconds = totalSeconds % 60
+    return "$minutes:${seconds.toString().padStart(2, '0')}"
 }

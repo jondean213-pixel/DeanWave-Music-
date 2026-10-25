@@ -3,7 +3,8 @@ package com.deanwaylabs.deanwave.dsp
 /**
  * The DeanWave sound engine: the heart of the app.
  *
- * Chain order, per frame: preamp -> 8-band parametric EQ -> bass boost -> limiter.
+ * Chain order, per frame: preamp -> 8-band parametric EQ -> bass boost
+ * -> stereo widening -> reverb -> AGC -> limiter.
  * The limiter is last on purpose — it is what lets the user boost freely
  * without clipping.
  *
@@ -20,6 +21,9 @@ package com.deanwaylabs.deanwave.dsp
 class SoundEngine {
     private val eq = ParametricEq(8)
     private val bass = BassBoost()
+    private val widening = StereoWidening()
+    private val reverb = Reverb()
+    private val agc = Agc()
     private val limiter = Limiter()
 
     /**
@@ -45,6 +49,8 @@ class SoundEngine {
     fun configure(sampleRate: Int, channelCount: Int) {
         eq.configure(sampleRate, channelCount)
         bass.configure(sampleRate, channelCount)
+        reverb.configure(sampleRate, channelCount)
+        agc.configure(sampleRate)
         limiter.configure(sampleRate)
         analyzer.configure(sampleRate)
     }
@@ -57,6 +63,32 @@ class SoundEngine {
     fun setBassStrength(strength: Float) = bass.setStrength(strength)
 
     fun bassStrength(): Float = bass.strength()
+
+    /**
+     * Reverb mix, 0.0 = dry only (exact bypass) to 1.0 = fully wet.
+     * Defaults to 0 — the existing presets and the flat preset are
+     * untouched by it, so flat stays identity.
+     */
+    fun setReverbMix(mix: Float) = reverb.setMix(mix)
+
+    fun reverbMix(): Float = reverb.mix()
+
+    /**
+     * Stereo widening, 0.0 = untouched stereo to 1.0 = side doubled.
+     * Defaults to 0 — mono-safe at any amount, and off is exact bypass.
+     */
+    fun setWideAmount(amount: Float) = widening.setAmount(amount)
+
+    fun wideAmount(): Float = widening.amount()
+
+    /**
+     * AGC on/off. Defaults to off — when off it is an exact bypass, and
+     * when on it only evens levels; the limiter downstream still caps
+     * peaks, so the two never fight.
+     */
+    fun setAgcEnabled(enabled: Boolean) = agc.setEnabled(enabled)
+
+    fun agcEnabled(): Boolean = agc.isEnabled()
 
     /** Applies a full [Preset] in one call. */
     fun applyPreset(preset: Preset) {
@@ -81,6 +113,11 @@ class SoundEngine {
             sample = bass.processChannel(channel, sample)
             frame[channel] = sample
         }
+        // Whole-frame stages, in chain order. Each is an exact bypass
+        // when off, so the flat preset and bypass behavior are unchanged.
+        widening.processFrame(frame)
+        reverb.processFrame(frame)
+        agc.processFrame(frame)
         limiter.processFrame(frame)
         analyzer.analyze(frame)
         return frame
@@ -101,6 +138,8 @@ class SoundEngine {
     fun reset() {
         eq.reset()
         bass.reset()
+        reverb.reset()
+        agc.reset()
         limiter.reset()
         analyzer.reset()
     }

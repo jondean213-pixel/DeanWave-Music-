@@ -31,5 +31,17 @@
                 <action android:name="androidx.media3.session.MediaSessionService" />
             </intent-filter>
         </service>
+
+        <!-- The one home-screen widget: now-playing title + play/pause. -->
+        <receiver
+            android:name="com.deanwaylabs.deanwave.widget.DeanWaveWidgetProvider"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/deanwave_widget_info" />
+        </receiver>
     </application>
 </manifest>
