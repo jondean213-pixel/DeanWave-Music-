@@ -32,3 +32,4 @@ jobs:
       - name: Build Debug APK with DSP and App
         working-directory: ./DeanWave-Music
         run: ./gradlew :app:assembleDebug
+        
