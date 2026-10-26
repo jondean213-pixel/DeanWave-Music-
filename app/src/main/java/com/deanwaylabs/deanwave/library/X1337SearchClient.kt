@@ -49,15 +49,19 @@ class X1337SearchClient {
 
     /**
      * Music search. Tries the music category first, then the plain
-     * search when the category path answers nothing — both are cheap
-     * GETs, and a wrong category path must never empty the window.
-     * Throws IOException when the site does not answer, so the caller
-     * can say so honestly.
+     * search when the category path answers nothing OR fails outright
+     * — a bad category path must never skip the plain search, it
+     * throws only when both paths fail, so the caller can say so
+     * honestly.
      */
     fun search(query: String): List<TorrentResult> {
         val encoded = URLEncoder.encode(query.trim(), "UTF-8")
-        val categoryRows = fetchRows("$BASE/category-search/$encoded/Music/1/")
-        if (categoryRows.isNotEmpty()) return categoryRows
+        try {
+            val categoryRows = fetchRows("$BASE/category-search/$encoded/Music/1/")
+            if (categoryRows.isNotEmpty()) return categoryRows
+        } catch (_: Exception) {
+            // Fall through to the plain search below.
+        }
         return fetchRows("$BASE/search/$encoded/1/")
     }
 
