@@ -19,6 +19,31 @@ android {
         compose = true
     }
 
+    // Release signing: the DeanWave release keystore (PKCS#12) lives in
+    // CI secrets + a private Drive backup ("DeanWay Keys") — never in
+    // the repo. CI decodes it to app/release.keystore before building.
+    // Without it (local builds, PRs without secrets) the release build
+    // stays unsigned rather than failing.
+    signingConfigs {
+        create("release") {
+            storeFile = file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+            storePassword = System.getenv("KEYSTORE_PASSWORD")
+            keyAlias = System.getenv("KEY_ALIAS") ?: "deanwave"
+            keyPassword = System.getenv("KEY_PASSWORD")
+            storeType = "PKCS12"
+        }
+    }
+
+    buildTypes {
+        release {
+            val keystoreFile = file(System.getenv("KEYSTORE_FILE") ?: "release.keystore")
+            if (keystoreFile.exists() && keystoreFile.length() > 0) {
+                signingConfig = signingConfigs.getByName("release")
+            }
+            isMinifyEnabled = false
+        }
+    }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.15"
     }

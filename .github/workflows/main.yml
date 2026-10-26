@@ -31,8 +31,17 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK with DSP and App
-        run: ./gradlew :app:assembleDebug
+      - name: Decode release keystore
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > app/release.keystore || true
+
+      - name: Build Release APK with DSP and App
+        env:
+          KEYSTORE_FILE: release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: deanwave
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: ./gradlew :app:assembleRelease
 
       - name: Publish APK to dev-build release
         if: github.event_name == 'push'
@@ -40,4 +49,5 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release view dev-build --repo ${{ github.repository }} >/dev/null 2>&1 || gh release create dev-build --repo ${{ github.repository }} --title "Latest dev build" --notes "Rolling dev build APK, updated on every green build."
-          gh release upload dev-build --repo ${{ github.repository }} --clobber app/build/outputs/apk/debug/app-debug.apk
+          cp app/build/outputs/apk/release/app-release.apk app-debug.apk
+          gh release upload dev-build --repo ${{ github.repository }} --clobber app-debug.apk
