@@ -90,6 +90,12 @@ class DriveAuth(private val context: Context) {
             Uri.parse(DriveAuthConfig.REDIRECT_URI)
         )
             .setScope(DriveAuthConfig.SCOPE_DRIVE_FILE)
+            // Always show Google's account chooser. The sign-in window
+            // can carry a different session than the browser's active
+            // account (field-proven: Chrome on deanjon6529, the window
+            // still opened jondean213), so never trust the default —
+            // make Jon pick the music account every time.
+            .setPrompt("select_account")
             .build()
         return service().getAuthorizationRequestIntent(request)
     }
