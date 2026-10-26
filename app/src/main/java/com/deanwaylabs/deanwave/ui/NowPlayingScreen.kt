@@ -64,6 +64,7 @@ import com.deanwaylabs.deanwave.library.LocalLibraryScanner
 import com.deanwaylabs.deanwave.library.LocalTrack
 import com.deanwaylabs.deanwave.library.LyricsResult
 import com.deanwaylabs.deanwave.library.MusicBrainzClient
+import com.deanwaylabs.deanwave.library.SongListSearch
 import com.deanwaylabs.deanwave.library.TorrentResult
 import com.deanwaylabs.deanwave.library.TorrentSearchClient
 import com.deanwaylabs.deanwave.library.loadLyricsForTrack
@@ -123,9 +124,9 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun NowPlayingScreen(
     controller: MediaController?,
-    onTorrentStream: (String, String) -> Unit = { _, _ -> },
+    onTorrentStream: (TorrentResult) -> Unit = {},
     torrentStatus: String = "",
-    onTorrentDownload: (String, String) -> Unit = { _, _ -> },
+    onTorrentDownload: (TorrentResult) -> Unit = {},
     browseStatus: String = "",
     downloadingMagnet: String? = null,
     driveConnected: Boolean = false,
@@ -345,7 +346,7 @@ fun NowPlayingScreen(
         browseSearching = true
         Thread {
             val results = try {
-                TorrentSearchClient().autoLoad()
+                SongListSearch.autoLoad()
             } catch (_: Exception) {
                 null
             }
@@ -490,8 +491,11 @@ fun NowPlayingScreen(
                     browseMessage = ""
                     Thread {
                         val results = try {
-                            val client = TorrentSearchClient()
-                            if (query.isEmpty()) client.autoLoad() else client.search(query).take(50)
+                            if (query.isEmpty()) {
+                                SongListSearch.autoLoad()
+                            } else {
+                                SongListSearch.search(query)
+                            }
                         } catch (_: Exception) {
                             null
                         }
@@ -589,16 +593,22 @@ fun NowPlayingScreen(
                     }
                     Spacer(modifier = Modifier.size(8.dp))
                     Button(
-                        onClick = { onTorrentStream(result.magnet, result.name) }
+                        onClick = { onTorrentStream(result) }
                     ) {
                         Text("PLAY")
                     }
                     Spacer(modifier = Modifier.size(4.dp))
                     Button(
-                        enabled = downloadingMagnet != result.magnet,
-                        onClick = { onTorrentDownload(result.magnet, result.name) }
+                        enabled = downloadingMagnet != (result.detailUrl ?: result.magnet),
+                        onClick = { onTorrentDownload(result) }
                     ) {
-                        Text(if (downloadingMagnet == result.magnet) "…" else "SAVE")
+                        Text(
+                            if (downloadingMagnet == (result.detailUrl ?: result.magnet)) {
+                                "…"
+                            } else {
+                                "SAVE"
+                            }
+                        )
                     }
                 }
             }
@@ -867,7 +877,19 @@ fun NowPlayingScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Button(
             enabled = magnet.isNotBlank(),
-            onClick = { onTorrentStream(magnet.trim(), "Torrent stream") }
+            onClick = {
+                onTorrentStream(
+                    TorrentResult(
+                        name = "Torrent stream",
+                        infoHash = "",
+                        seeders = 0,
+                        leechers = 0,
+                        sizeBytes = 0,
+                        numFiles = 0,
+                        magnet = magnet.trim()
+                    )
+                )
+            }
         ) {
             Text("STREAM TORRENT")
         }

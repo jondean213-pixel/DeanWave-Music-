@@ -20,8 +20,10 @@ import com.deanwaylabs.deanwave.library.DriveAuth
 import com.deanwaylabs.deanwave.library.DriveConfig
 import com.deanwaylabs.deanwave.library.DriveResumableUploader
 import com.deanwaylabs.deanwave.library.TokenDriveCredentials
+import com.deanwaylabs.deanwave.library.TorrentResult
 import com.deanwaylabs.deanwave.library.TorrentSearchClient
 import com.deanwaylabs.deanwave.library.TorrentStreamer
+import com.deanwaylabs.deanwave.library.X1337SearchClient
 import com.deanwaylabs.deanwave.library.UnconfiguredDriveCredentials
 import com.deanwaylabs.deanwave.library.resolveMusicDir
 import com.deanwaylabs.deanwave.playback.PlaybackService
@@ -129,9 +131,9 @@ class MainActivity : ComponentActivity() {
             DeanWaveTheme {
                 NowPlayingScreen(
                     controller = controller,
-                    onTorrentStream = { magnet, title -> streamMagnet(magnet, title) },
+                    onTorrentStream = { result -> streamMagnet(result) },
                     torrentStatus = torrentStatus,
-                    onTorrentDownload = { magnet, title -> downloadTorrent(magnet, title) },
+                    onTorrentDownload = { result -> downloadTorrent(result) },
                     browseStatus = browseStatus,
                     downloadingMagnet = downloadingMagnet,
                     driveConnected = driveConnected,
@@ -173,14 +175,36 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Streams a magnet link: fetch + download + proxy happen on a
-     * background thread (fetchMagnet blocks), and the player work happens
-     * back on the main thread. The proxy URL plays through the service's
-     * ExoPlayer, so the DSP chain (EQ, bass, limiter) treats a torrent
-     * exactly like a local file. [displayName] is the row the user
-     * tapped (or "Torrent stream" from the magnet box); the artist is
-     * parsed out of it when it looks like "Artist - Title".
+     * Streams a browse row. Main-index rows carry their magnet; backup
+     * rows carry only a detail page, so the magnet is fetched from it
+     * first and the stream starts from there.
      */
+    private fun streamMagnet(result: TorrentResult) {
+        if (result.magnet.isNotBlank()) {
+            streamMagnet(result.magnet, result.name)
+            return
+        }
+        val detailUrl = result.detailUrl
+        if (detailUrl.isNullOrEmpty()) {
+            torrentStatus = "Couldn't open that song — try another."
+            return
+        }
+        torrentStatus = "Finding the song…"
+        Thread {
+            try {
+                val magnet = X1337SearchClient().resolveMagnet(detailUrl)
+                if (magnet.isNullOrEmpty()) {
+                    mainHandler.post {
+                        torrentStatus = "Couldn't open that song — try another."
+                    }
+                } else {
+                    mainHandler.post { streamMagnet(magnet, result.name) }
+                }
+            } catch (e: Exception) {
+                mainHandler.post { torrentStatus = "Couldn't open that song — try another." }
+            }
+        }.start()
+    }
     private fun streamMagnet(magnet: String, displayName: String = "Torrent stream") {
         torrentStatus = "Finding the torrent…"
         Thread {
@@ -224,25 +248,65 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
+     * Downloads a browse row. The row key (detail page for backup rows,
+     * magnet for main-index rows) is what the screen tracks, so the
+     * SAVE button disables for exactly the row downloading. Backup
+     * rows resolve their magnet from the detail page first.
+     */
+    private fun downloadTorrent(result: TorrentResult) {
+        downloadingMagnet = result.detailUrl ?: result.magnet
+        if (result.magnet.isNotBlank()) {
+            downloadTorrentResolved(result.magnet, result.name)
+            return
+        }
+        val detailUrl = result.detailUrl
+        if (detailUrl.isNullOrEmpty()) {
+            downloadingMagnet = null
+            browseStatus = "Couldn't open that song — try another."
+            return
+        }
+        browseStatus = "Finding the song…"
+        Thread {
+            try {
+                val magnet = X1337SearchClient().resolveMagnet(detailUrl)
+                if (magnet.isNullOrEmpty()) {
+                    mainHandler.post {
+                        downloadingMagnet = null
+                        browseStatus = "Couldn't open that song — try another."
+                    }
+                } else {
+                    mainHandler.post { downloadTorrentResolved(magnet, result.name) }
+                }
+            } catch (e: Exception) {
+                mainHandler.post {
+                    downloadingMagnet = null
+                    browseStatus = "Couldn't open that song — try another."
+                }
+            }
+        }.start()
+    }
+
+    /**
      * Downloads a magnet link whole. When the music Drive is connected,
      * the songs go to the Drive folder and the phone copy is deleted —
      * the phone keeps nothing, which is what a nearly-full phone needs.
      * When it is not connected, the songs land in the phone's Music
      * folder, as before. Progress reports back through [browseStatus];
      * the download dies with the app, so the status line says to keep
-     * the app open.
+     * the app open. The row key is set by the caller and only cleared
+     * here, at the end.
      */
-    private fun downloadTorrent(magnet: String, displayName: String) {
+    private fun downloadTorrentResolved(magnet: String, displayName: String) {
         if (driveConnected) {
             downloadTorrentToDrive(magnet, displayName)
             return
         }
         val musicDir = resolveMusicDir(this)
         if (musicDir == null) {
+            downloadingMagnet = null
             browseStatus = "No writable Music folder found — download can't land anywhere."
             return
         }
-        downloadingMagnet = magnet
         browseStatus = "Downloading $displayName… keep the app open until it finishes."
         Thread {
             try {
@@ -280,7 +344,6 @@ class MainActivity : ComponentActivity() {
 
     /** SAVE with the music Drive connected: download, upload, clean up. */
     private fun downloadTorrentToDrive(magnet: String, displayName: String) {
-        downloadingMagnet = magnet
         browseStatus = "Downloading $displayName… then sending it to your " +
             "music Drive. Keep the app open until it finishes."
         Thread {

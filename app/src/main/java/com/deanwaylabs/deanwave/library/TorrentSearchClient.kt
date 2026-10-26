@@ -29,7 +29,13 @@ data class TorrentResult(
     val leechers: Int,
     val sizeBytes: Long,
     val numFiles: Int,
-    val magnet: String
+    val magnet: String,
+    /**
+     * The backup site's detail page, when the row came from there.
+     * Backup rows carry no magnet until [X1337SearchClient.resolveMagnet]
+     * fetches it on PLAY/SAVE; main-index rows leave this null.
+     */
+    val detailUrl: String? = null
 )
 
 class TorrentSearchClient {
