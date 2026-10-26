@@ -1,5 +1,7 @@
 package com.deanwaylabs.deanwave.library
 
+import android.content.Context
+import android.os.Environment
 import com.frostwire.jlibtorrent.SessionManager
 import com.frostwire.jlibtorrent.TorrentHandle
 import com.frostwire.jlibtorrent.TorrentInfo
@@ -173,4 +175,145 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
             currentHandle = null
         }
     }
+
+    /**
+     * Downloads a torrent whole into the phone's Music folder — the
+     * "Download" half of tap-to-listen-or-download. Same session as
+     * streaming, but a separate handle: streaming keeps its own proxy
+     * and handle untouched.
+     *
+     * Flow: fetchMagnet → download → poll the handle's status every
+     * 2s, reporting done/total, until isFinished (or an error) →
+     * copy every audio file under the torrent into
+     * Music/<torrent-name>/. The copy is what the library scan finds:
+     * SCAN LIBRARY picks it up even before the system's media index
+     * notices it.
+     *
+     * Blocking; call off the main thread. A download in flight dies
+     * with the app (the session stops in onDestroy), so the status
+     * line says to keep the app open until it finishes.
+     */
+    fun downloadToMusic(
+        magnetUrl: String,
+        musicDir: File,
+        onProgress: (doneBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+        onDone: (savedFiles: List<File>) -> Unit,
+        onError: (message: String) -> Unit = {}
+    ) {
+        try {
+            val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir)
+                ?: run {
+                    onError("Couldn't fetch that magnet link — check the link and try again.")
+                    return
+                }
+            val torrentInfo = TorrentInfo.bdecode(metadata)
+            sessionManager.download(torrentInfo, downloadDir)
+            val handle = sessionManager.find(torrentInfo.infoHashV1())
+                ?: run {
+                    onError("Torrent added but no handle came back — try again.")
+                    return
+                }
+            val totalSize = torrentInfo.totalSize()
+            while (true) {
+                val status = try {
+                    handle.status()
+                } catch (_: Exception) {
+                    onError("Download lost its torrent — try again.")
+                    return
+                }
+                onProgress(status.totalDone(), totalSize)
+                if (status.isFinished()) break
+                val error = try {
+                    status.errorCode()
+                } catch (_: Exception) {
+                    null
+                }
+                if (error != null && error.value() != 0) {
+                    onError("Download failed: ${error.message()}")
+                    return
+                }
+                try {
+                    Thread.sleep(2000)
+                } catch (_: InterruptedException) {
+                    return
+                }
+            }
+            val torrentName = torrentInfo.name()
+            val base = File(downloadDir, torrentName)
+            val audioFiles = mutableListOf<File>()
+            if (base.isFile && base.extension.lowercase() in AUDIO_EXTENSIONS) {
+                audioFiles += base
+            } else if (base.isDirectory) {
+                collectAudio(base, 0, audioFiles)
+            }
+            if (audioFiles.isEmpty()) {
+                onError("Download finished but no audio files were found in it.")
+                return
+            }
+            val destDir = File(musicDir, HttpSongDownloader.sanitizeFileName(torrentName))
+            destDir.mkdirs()
+            val saved = mutableListOf<File>()
+            for (source in audioFiles) {
+                try {
+                    val dest = File(destDir, source.name)
+                    source.copyTo(dest, overwrite = true)
+                    saved += dest
+                } catch (_: Exception) {
+                    // One failed copy never blocks the rest.
+                }
+            }
+            if (saved.isEmpty()) {
+                onError("Download finished but nothing could be saved to your Music folder.")
+                return
+            }
+            try {
+                sessionManager.remove(handle)
+            } catch (_: Exception) {
+            }
+            onDone(saved)
+        } catch (e: Exception) {
+            onError("Download failed: ${e.message}")
+        }
+    }
+
+    private fun collectAudio(dir: File, depth: Int, out: MutableList<File>) {
+        if (depth > 4) return
+        val children = try {
+            dir.listFiles()
+        } catch (_: SecurityException) {
+            null
+        } ?: return
+        for (child in children) {
+            try {
+                when {
+                    child.isFile && child.extension.lowercase() in AUDIO_EXTENSIONS -> out += child
+                    child.isDirectory && !child.name.startsWith(".") ->
+                        collectAudio(child, depth + 1, out)
+                }
+            } catch (_: SecurityException) {
+                // Unreadable entry: skip it.
+            }
+        }
+    }
+}
+
+/**
+ * The first writable Music folder: the shared Music folder first, then
+ * a Music folder on any removable volume — the same roots the library
+ * scan walks, so a download saved here is a download the scan finds.
+ * Null when no writable Music folder exists.
+ */
+fun resolveMusicDir(context: Context): File? {
+    val candidates = try {
+        LocalLibraryScanner.defaultConfig(context).scanRoots
+    } catch (_: Exception) {
+        emptyList()
+    }.toMutableList()
+    try {
+        @Suppress("DEPRECATION")
+        val sharedMusic = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+        if (sharedMusic != null) candidates += sharedMusic
+    } catch (_: Exception) {
+    }
+    return candidates.firstOrNull { it.isDirectory && it.canWrite() }
 }

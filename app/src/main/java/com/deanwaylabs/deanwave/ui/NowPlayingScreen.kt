@@ -3,7 +3,9 @@ package com.deanwaylabs.deanwave.ui
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,18 +43,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.session.MediaController
+import com.deanwaylabs.deanwave.R
 import com.deanwaylabs.deanwave.dsp.Presets
 import com.deanwaylabs.deanwave.library.ArtistBio
+import com.deanwaylabs.deanwave.library.CoverArtClient
 import com.deanwaylabs.deanwave.library.LocalLibraryScanner
 import com.deanwaylabs.deanwave.library.LocalTrack
 import com.deanwaylabs.deanwave.library.LyricsResult
 import com.deanwaylabs.deanwave.library.MusicBrainzClient
+import com.deanwaylabs.deanwave.library.TorrentResult
+import com.deanwaylabs.deanwave.library.TorrentSearchClient
 import com.deanwaylabs.deanwave.library.loadLyricsForTrack
 import com.deanwaylabs.deanwave.playback.EngineCommands
 import com.deanwaylabs.deanwave.playback.LocalSourceResolver
@@ -95,6 +106,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  *   activity's TorrentStreamer + localhost proxy feed the URL to the
  *   player. The screen itself never touches the torrent engine; it
  *   reports the activity's [torrentStatus] honestly.
+ * - A Browse window: the song list loads itself on launch from a
+ *   public torrent index, with album art per row; tap PLAY to stream
+ *   or SAVE to download the whole torrent into the Music folder.
+ *   The search bar is only for specific songs. The magnet box stays
+ *   as the fallback.
  * - Perfect-app additions: Space controls (reverb mix, stereo width,
  *   AGC switch) driving the live engine through custom commands, and a
  *   sleep timer whose deadline lives in the service. The widget and the
@@ -105,8 +121,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 @Composable
 fun NowPlayingScreen(
     controller: MediaController?,
-    onTorrentStream: (String) -> Unit = {},
-    torrentStatus: String = ""
+    onTorrentStream: (String, String) -> Unit = { _, _ -> },
+    torrentStatus: String = "",
+    onTorrentDownload: (String, String) -> Unit = { _, _ -> },
+    browseStatus: String = "",
+    downloadingMagnet: String? = null
 ) {
     val context = LocalContext.current
     val scanHandler = remember { Handler(Looper.getMainLooper()) }
@@ -129,6 +148,11 @@ fun NowPlayingScreen(
     var libraryStatus by remember { mutableStateOf("") }
     var scanning by remember { mutableStateOf(false) }
     var magnet by remember { mutableStateOf("") }
+    var searchQuery by remember { mutableStateOf("") }
+    var browseResults by remember { mutableStateOf<List<TorrentResult>>(emptyList()) }
+    var browseSearching by remember { mutableStateOf(false) }
+    var browseMessage by remember { mutableStateOf("") }
+    val browseHandler = remember { Handler(Looper.getMainLooper()) }
 
     DisposableEffect(controller) {
         if (controller == null) {
@@ -307,14 +331,41 @@ fun NowPlayingScreen(
         onDispose { disposed.set(true) }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .verticalScroll(rememberScrollState())
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
-    ) {
+    // Browse window: it fills itself on launch — the search bar is
+    // only for specific songs. Plain Thread + Handler, like the rest.
+    DisposableEffect(Unit) {
+        val handler = Handler(Looper.getMainLooper())
+        var disposed = false
+        browseSearching = true
+        Thread {
+            val results = try {
+                TorrentSearchClient().autoLoad()
+            } catch (_: Exception) {
+                null
+            }
+            if (!disposed) {
+                handler.post {
+                    browseSearching = false
+                    if (results == null) {
+                        browseMessage = "The song list didn't answer — tap SEARCH to try again."
+                    } else {
+                        browseResults = results
+                    }
+                }
+            }
+        }.start()
+        onDispose { disposed = true }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        AnimatedBackground(modifier = Modifier.fillMaxSize())
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
         Spacer(modifier = Modifier.height(16.dp))
         Box(
             modifier = Modifier.fillMaxWidth(),
@@ -394,6 +445,132 @@ fun NowPlayingScreen(
                             contentDescription = "Next",
                             tint = MaterialTheme.colorScheme.primary
                         )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = "Browse",
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            text = "Songs load on their own — search only when you want something specific.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            OutlinedTextField(
+                value = searchQuery,
+                onValueChange = { searchQuery = it },
+                label = { Text("Search songs") },
+                singleLine = true,
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.size(8.dp))
+            Button(
+                enabled = !browseSearching,
+                onClick = {
+                    val query = searchQuery.trim()
+                    browseSearching = true
+                    browseMessage = ""
+                    Thread {
+                        val results = try {
+                            val client = TorrentSearchClient()
+                            if (query.isEmpty()) client.autoLoad() else client.search(query).take(50)
+                        } catch (_: Exception) {
+                            null
+                        }
+                        browseHandler.post {
+                            browseSearching = false
+                            if (results == null) {
+                                browseMessage = "The song list didn't answer — check your connection and try again."
+                            } else {
+                                browseResults = results
+                                browseMessage = if (results.isEmpty()) {
+                                    "No songs found for that search."
+                                } else {
+                                    ""
+                                }
+                            }
+                        }
+                    }.start()
+                }
+            ) {
+                Text("SEARCH")
+            }
+        }
+        if (browseSearching) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = "Loading songs…",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        if (browseMessage.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = browseMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        if (browseStatus.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = browseStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+        val browseSnapshot = browseResults
+        if (browseSnapshot.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            for (result in browseSnapshot) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                ) {
+                    BrowseArtThumb(result = result)
+                    Spacer(modifier = Modifier.size(12.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = result.name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = "${result.seeders} seeders • " +
+                                TorrentSearchClient.formatSize(result.sizeBytes),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.size(8.dp))
+                    Button(
+                        onClick = { onTorrentStream(result.magnet, result.name) }
+                    ) {
+                        Text("PLAY")
+                    }
+                    Spacer(modifier = Modifier.size(4.dp))
+                    Button(
+                        enabled = downloadingMagnet != result.magnet,
+                        onClick = { onTorrentDownload(result.magnet, result.name) }
+                    ) {
+                        Text(if (downloadingMagnet == result.magnet) "…" else "SAVE")
                     }
                 }
             }
@@ -662,7 +839,7 @@ fun NowPlayingScreen(
         Spacer(modifier = Modifier.height(8.dp))
         Button(
             enabled = magnet.isNotBlank(),
-            onClick = { onTorrentStream(magnet.trim()) }
+            onClick = { onTorrentStream(magnet.trim(), "Torrent stream") }
         ) {
             Text("STREAM TORRENT")
         }
@@ -710,6 +887,61 @@ fun NowPlayingScreen(
         Spacer(modifier = Modifier.height(32.dp))
         DownloadSection()
         Spacer(modifier = Modifier.height(16.dp))
+        }
+    }
+}
+
+/**
+ * One browse-row thumbnail: the album art for the row's song, looked
+ * up by artist + title, cached in memory so scrolling never re-hits
+ * the network. The DeanWave mark placeholder when no art is found —
+ * never a blank hole, never a fabricated picture.
+ */
+@Composable
+private fun BrowseArtThumb(
+    result: TorrentResult,
+    modifier: Modifier = Modifier
+) {
+    var bitmap by remember(result.infoHash) { mutableStateOf<ImageBitmap?>(null) }
+
+    DisposableEffect(result.infoHash) {
+        val disposed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        val thread = Thread {
+            val (artist, title) = TorrentSearchClient.parseArtistTitle(result.name)
+            val art = CoverArtClient.lookupArtwork(artist, title)
+            if (!disposed.get() && art != null) {
+                handler.post { bitmap = art.asImageBitmap() }
+            }
+        }
+        thread.start()
+        onDispose {
+            disposed.set(true)
+            thread.interrupt()
+        }
+    }
+
+    Box(
+        modifier = modifier
+            .size(56.dp)
+            .border(1.dp, MaterialTheme.colorScheme.primary),
+        contentAlignment = Alignment.Center
+    ) {
+        val art = bitmap
+        if (art != null) {
+            Image(
+                bitmap = art,
+                contentDescription = "Album art",
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.size(56.dp)
+            )
+        } else {
+            Image(
+                painter = painterResource(R.drawable.deanwave_mark),
+                contentDescription = "DeanWave mark",
+                modifier = Modifier.size(28.dp)
+            )
+        }
     }
 }
 

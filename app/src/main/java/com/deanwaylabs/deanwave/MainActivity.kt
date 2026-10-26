@@ -16,7 +16,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.deanwaylabs.deanwave.library.TorrentSearchClient
 import com.deanwaylabs.deanwave.library.TorrentStreamer
+import com.deanwaylabs.deanwave.library.resolveMusicDir
 import com.deanwaylabs.deanwave.playback.PlaybackService
 import com.deanwaylabs.deanwave.ui.DeanWaveTheme
 import com.deanwaylabs.deanwave.ui.NowPlayingScreen
@@ -44,6 +46,8 @@ class MainActivity : ComponentActivity() {
 
     private var controller by mutableStateOf<MediaController?>(null)
     private var torrentStatus by mutableStateOf("")
+    private var browseStatus by mutableStateOf("")
+    private var downloadingMagnet by mutableStateOf<String?>(null)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Torrent engine: the one addition to last night's app.
@@ -68,8 +72,11 @@ class MainActivity : ComponentActivity() {
             DeanWaveTheme {
                 NowPlayingScreen(
                     controller = controller,
-                    onTorrentStream = { magnet -> streamMagnet(magnet) },
-                    torrentStatus = torrentStatus
+                    onTorrentStream = { magnet, title -> streamMagnet(magnet, title) },
+                    torrentStatus = torrentStatus,
+                    onTorrentDownload = { magnet, title -> downloadTorrent(magnet, title) },
+                    browseStatus = browseStatus,
+                    downloadingMagnet = downloadingMagnet
                 )
             }
         }
@@ -105,9 +112,11 @@ class MainActivity : ComponentActivity() {
      * background thread (fetchMagnet blocks), and the player work happens
      * back on the main thread. The proxy URL plays through the service's
      * ExoPlayer, so the DSP chain (EQ, bass, limiter) treats a torrent
-     * exactly like a local file.
+     * exactly like a local file. [displayName] is the row the user
+     * tapped (or "Torrent stream" from the magnet box); the artist is
+     * parsed out of it when it looks like "Artist - Title".
      */
-    private fun streamMagnet(magnet: String) {
+    private fun streamMagnet(magnet: String, displayName: String = "Torrent stream") {
         torrentStatus = "Finding the torrent…"
         Thread {
             try {
@@ -119,12 +128,16 @@ class MainActivity : ComponentActivity() {
                             if (c == null) {
                                 torrentStatus = "Player isn't connected yet — tap Stream again."
                             } else {
+                                val (artist, _) =
+                                    TorrentSearchClient.parseArtistTitle(displayName)
                                 val item = MediaItem.Builder()
                                     .setUri(proxyUrl)
                                     .setMediaMetadata(
                                         MediaMetadata.Builder()
-                                            .setTitle("Torrent stream")
-                                            .setArtist("Magnet link")
+                                            .setTitle(displayName)
+                                            .setArtist(
+                                                artist.ifEmpty { "Magnet link" }
+                                            )
                                             .build()
                                     )
                                     .build()
@@ -141,6 +154,53 @@ class MainActivity : ComponentActivity() {
                 )
             } catch (e: Exception) {
                 mainHandler.post { torrentStatus = "Stream failed: ${e.message}" }
+            }
+        }.start()
+    }
+
+    /**
+     * Downloads a magnet link whole into the phone's Music folder.
+     * Progress reports back through [browseStatus]; the download dies
+     * with the app, so the status line says to keep the app open.
+     */
+    private fun downloadTorrent(magnet: String, displayName: String) {
+        val musicDir = resolveMusicDir(this)
+        if (musicDir == null) {
+            browseStatus = "No writable Music folder found — download can't land anywhere."
+            return
+        }
+        downloadingMagnet = magnet
+        browseStatus = "Downloading $displayName… keep the app open until it finishes."
+        Thread {
+            try {
+                torrentStreamer.downloadToMusic(
+                    magnetUrl = magnet,
+                    musicDir = musicDir,
+                    onProgress = { done, total ->
+                        mainHandler.post {
+                            val pct = if (total > 0) (done * 100 / total).toInt() else 0
+                            browseStatus = "Downloading… $pct%"
+                        }
+                    },
+                    onDone = { saved ->
+                        mainHandler.post {
+                            downloadingMagnet = null
+                            browseStatus = "Saved ${saved.size} track(s) to your Music " +
+                                "folder — SCAN LIBRARY to see them."
+                        }
+                    },
+                    onError = { message ->
+                        mainHandler.post {
+                            downloadingMagnet = null
+                            browseStatus = message
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                mainHandler.post {
+                    downloadingMagnet = null
+                    browseStatus = "Download failed: ${e.message}"
+                }
             }
         }.start()
     }
