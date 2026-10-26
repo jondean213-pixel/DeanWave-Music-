@@ -16,8 +16,13 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.deanwaylabs.deanwave.library.DriveAuth
+import com.deanwaylabs.deanwave.library.DriveConfig
+import com.deanwaylabs.deanwave.library.DriveResumableUploader
+import com.deanwaylabs.deanwave.library.TokenDriveCredentials
 import com.deanwaylabs.deanwave.library.TorrentSearchClient
 import com.deanwaylabs.deanwave.library.TorrentStreamer
+import com.deanwaylabs.deanwave.library.UnconfiguredDriveCredentials
 import com.deanwaylabs.deanwave.library.resolveMusicDir
 import com.deanwaylabs.deanwave.playback.PlaybackService
 import com.deanwaylabs.deanwave.ui.DeanWaveTheme
@@ -41,6 +46,11 @@ import com.frostwire.jlibtorrent.SessionManager
  *    screen's magnet box calls [streamMagnet] off the main thread. When
  *    the proxy is ready, the returned URL becomes the player media item
  *    and plays through the same DSP chain as every other source.
+ *
+ * The music-Drive addition (Oct 25):
+ * 4. DriveAuth — Google sign-in for Jon's music-Drive account. SAVE
+ *    sends songs to the Drive folder when the account is connected,
+ *    and to the phone's Music folder when it is not.
  */
 class MainActivity : ComponentActivity() {
 
@@ -48,11 +58,44 @@ class MainActivity : ComponentActivity() {
     private var torrentStatus by mutableStateOf("")
     private var browseStatus by mutableStateOf("")
     private var downloadingMagnet by mutableStateOf<String?>(null)
+    private var driveConnected by mutableStateOf(false)
     private val mainHandler = Handler(Looper.getMainLooper())
 
     // Torrent engine: the one addition to last night's app.
     private lateinit var torrentStreamer: TorrentStreamer
     private val sessionManager = SessionManager()
+
+    // Music-Drive sign-in. The folder id is state so the screen picks
+    // it up when the background folder lookup lands.
+    private lateinit var driveAuth: DriveAuth
+    private var driveFolderId by mutableStateOf<String?>(null)
+
+    private val driveSignInLauncher =
+        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+            Thread {
+                try {
+                    val ok = driveAuth.handleSignInResult(result.data)
+                    if (ok) {
+                        val folderId = driveAuth.musicFolderIdBlocking()
+                        mainHandler.post {
+                            driveFolderId = folderId
+                            driveConnected = true
+                            browseStatus = "Music Drive connected — SAVE now sends " +
+                                "songs to your Drive."
+                        }
+                    } else {
+                        mainHandler.post {
+                            browseStatus = "Music Drive sign-in didn't finish — " +
+                                "try Connect again."
+                        }
+                    }
+                } catch (e: Exception) {
+                    mainHandler.post {
+                        browseStatus = "Music Drive sign-in failed: ${e.message}"
+                    }
+                }
+            }.start()
+        }
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) {
@@ -68,6 +111,20 @@ class MainActivity : ComponentActivity() {
             sessionManager.start()
         }
 
+        driveAuth = DriveAuth(this)
+        driveConnected = driveAuth.isConnected()
+        if (driveConnected) {
+            // Folder id is lazy: SAVE falls back to the Drive root when
+            // it is not ready yet, so this never blocks the screen.
+            Thread {
+                try {
+                    val folderId = driveAuth.musicFolderIdBlocking()
+                    mainHandler.post { driveFolderId = folderId }
+                } catch (_: Exception) {
+                }
+            }.start()
+        }
+
         setContent {
             DeanWaveTheme {
                 NowPlayingScreen(
@@ -76,7 +133,15 @@ class MainActivity : ComponentActivity() {
                     torrentStatus = torrentStatus,
                     onTorrentDownload = { magnet, title -> downloadTorrent(magnet, title) },
                     browseStatus = browseStatus,
-                    downloadingMagnet = downloadingMagnet
+                    downloadingMagnet = downloadingMagnet,
+                    driveConnected = driveConnected,
+                    onConnectDrive = { driveSignInLauncher.launch(driveAuth.signInIntent()) },
+                    driveCredentials = if (driveConnected) {
+                        TokenDriveCredentials(driveAuth)
+                    } else {
+                        UnconfiguredDriveCredentials
+                    },
+                    driveFolderId = driveFolderId
                 )
             }
         }
@@ -159,11 +224,19 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * Downloads a magnet link whole into the phone's Music folder.
-     * Progress reports back through [browseStatus]; the download dies
-     * with the app, so the status line says to keep the app open.
+     * Downloads a magnet link whole. When the music Drive is connected,
+     * the songs go to the Drive folder and the phone copy is deleted —
+     * the phone keeps nothing, which is what a nearly-full phone needs.
+     * When it is not connected, the songs land in the phone's Music
+     * folder, as before. Progress reports back through [browseStatus];
+     * the download dies with the app, so the status line says to keep
+     * the app open.
      */
     private fun downloadTorrent(magnet: String, displayName: String) {
+        if (driveConnected) {
+            downloadTorrentToDrive(magnet, displayName)
+            return
+        }
         val musicDir = resolveMusicDir(this)
         if (musicDir == null) {
             browseStatus = "No writable Music folder found — download can't land anywhere."
@@ -203,6 +276,106 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }.start()
+    }
+
+    /** SAVE with the music Drive connected: download, upload, clean up. */
+    private fun downloadTorrentToDrive(magnet: String, displayName: String) {
+        downloadingMagnet = magnet
+        browseStatus = "Downloading $displayName… then sending it to your " +
+            "music Drive. Keep the app open until it finishes."
+        Thread {
+            try {
+                torrentStreamer.downloadToCache(
+                    magnetUrl = magnet,
+                    onProgress = { done, total ->
+                        mainHandler.post {
+                            val pct = if (total > 0) (done * 100 / total).toInt() else 0
+                            browseStatus = "Downloading… $pct%"
+                        }
+                    },
+                    onDone = { files, base ->
+                        try {
+                            val uploader = DriveResumableUploader()
+                            val config = DriveConfig(
+                                musicFolderId = driveFolderId,
+                                accountLabel = "Music Drive"
+                            )
+                            val credentials = TokenDriveCredentials(driveAuth)
+                            var uploaded = 0
+                            for (file in files) {
+                                mainHandler.post {
+                                    browseStatus = "Uploading to Drive… " +
+                                        "${uploaded + 1} of ${files.size}"
+                                }
+                                uploader.upload(
+                                    file = file,
+                                    fileName = file.name,
+                                    mimeType = mimeTypeFor(file),
+                                    config = config,
+                                    credentials = credentials,
+                                    onProgress = { done, total ->
+                                        mainHandler.post {
+                                            val pct = if (total > 0) {
+                                                (done * 100 / total).toInt()
+                                            } else {
+                                                0
+                                            }
+                                            browseStatus = "Uploading ${file.name}… $pct%"
+                                        }
+                                    }
+                                )
+                                uploaded++
+                            }
+                            // Uploads confirmed: the phone copy goes, so
+                            // playing never eats the phone's free space.
+                            try {
+                                if (base.isDirectory) base.deleteRecursively() else base.delete()
+                            } catch (_: Exception) {
+                            }
+                            mainHandler.post {
+                                downloadingMagnet = null
+                                browseStatus = "Saved $uploaded track(s) to your music Drive."
+                            }
+                        } catch (e: Exception) {
+                            // The download stays on the phone, so tapping
+                            // SAVE again retries the upload without
+                            // re-downloading the torrent.
+                            mainHandler.post {
+                                downloadingMagnet = null
+                                browseStatus = "Drive upload failed: ${e.message} — " +
+                                    "the download is still on your phone, " +
+                                    "tap SAVE again to retry."
+                            }
+                        }
+                    },
+                    onError = { message ->
+                        mainHandler.post {
+                            downloadingMagnet = null
+                            browseStatus = message
+                        }
+                    }
+                )
+            } catch (e: Exception) {
+                mainHandler.post {
+                    downloadingMagnet = null
+                    browseStatus = "Download failed: ${e.message}"
+                }
+            }
+        }.start()
+    }
+
+    /** Drive needs a MIME type per file; unknown audio stays generic. */
+    private fun mimeTypeFor(file: java.io.File): String {
+        return when (file.extension.lowercase()) {
+            "mp3" -> "audio/mpeg"
+            "flac" -> "audio/flac"
+            "wav" -> "audio/x-wav"
+            "m4a" -> "audio/mp4"
+            "ogg" -> "audio/ogg"
+            "opus" -> "audio/opus"
+            "aac" -> "audio/aac"
+            else -> "application/octet-stream"
+        }
     }
 
     override fun onDestroy() {

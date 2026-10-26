@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.deanwaylabs.deanwave.library.DownloadController
 import com.deanwaylabs.deanwave.library.DownloadStage
 import com.deanwaylabs.deanwave.library.DriveConfig
+import com.deanwaylabs.deanwave.library.DriveCredentials
 import com.deanwaylabs.deanwave.library.UnconfiguredDriveCredentials
 
 /**
@@ -37,14 +38,18 @@ import com.deanwaylabs.deanwave.library.UnconfiguredDriveCredentials
  * (servers that do not send a length) shows bytes alone, never a fake
  * percentage.
  *
- * Honest gap, stated in the UI rather than hidden: the Drive account is
- * not connected yet (Jon's music-Drive account is still awaited), so
- * until the account wiring lands, tapping download reports "not
- * connected" instead of pretending to upload. The plumbing underneath
- * is complete and waiting on that one connection.
+ * The account comes from the activity: when the music Drive is
+ * connected, [credentials] carries its sign-in and [musicFolderId] the
+ * folder songs land in; until then the unconfigured credentials report
+ * "not connected" instead of pretending to upload. The plumbing
+ * underneath is complete and waiting on that one connection.
  */
 @Composable
-fun DownloadSection(modifier: Modifier = Modifier) {
+fun DownloadSection(
+    modifier: Modifier = Modifier,
+    credentials: DriveCredentials = UnconfiguredDriveCredentials,
+    musicFolderId: String? = null
+) {
     val context = LocalContext.current
     var url by remember { mutableStateOf("") }
     var fileName by remember { mutableStateOf("") }
@@ -53,13 +58,14 @@ fun DownloadSection(modifier: Modifier = Modifier) {
     var status by remember { mutableStateOf("") }
     var progress by remember { mutableStateOf("") }
 
-    // The account wiring replaces UnconfiguredDriveCredentials when Jon
-    // provides the music-Drive account; everything else stays the same.
-    val controller = remember {
+    // Keyed on the account: signing in swaps the credentials in, and
+    // the controller picks the new account up instead of holding the
+    // old "not connected" one.
+    val controller = remember(credentials, musicFolderId) {
         DownloadController(
             context,
-            UnconfiguredDriveCredentials,
-            DriveConfig(musicFolderId = null, accountLabel = "Music Drive"),
+            credentials,
+            DriveConfig(musicFolderId = musicFolderId, accountLabel = "Music Drive"),
             Handler(Looper.getMainLooper())
         )
     }
@@ -167,9 +173,12 @@ fun DownloadSection(modifier: Modifier = Modifier) {
         }
         Spacer(modifier = Modifier.height(4.dp))
         Text(
-            text = "Drive account connection is pending (Jon's music-Drive " +
-                "account) — until it lands, downloads report that gap " +
-                "instead of uploading.",
+            text = if (credentials === UnconfiguredDriveCredentials) {
+                "Music Drive is not connected — tap Connect above, then " +
+                    "downloads land on your music Drive."
+            } else {
+                "Downloads land on your music Drive."
+            },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
         )

@@ -58,6 +58,8 @@ import com.deanwaylabs.deanwave.R
 import com.deanwaylabs.deanwave.dsp.Presets
 import com.deanwaylabs.deanwave.library.ArtistBio
 import com.deanwaylabs.deanwave.library.CoverArtClient
+import com.deanwaylabs.deanwave.library.DriveCredentials
+import com.deanwaylabs.deanwave.library.UnconfiguredDriveCredentials
 import com.deanwaylabs.deanwave.library.LocalLibraryScanner
 import com.deanwaylabs.deanwave.library.LocalTrack
 import com.deanwaylabs.deanwave.library.LyricsResult
@@ -125,7 +127,11 @@ fun NowPlayingScreen(
     torrentStatus: String = "",
     onTorrentDownload: (String, String) -> Unit = { _, _ -> },
     browseStatus: String = "",
-    downloadingMagnet: String? = null
+    downloadingMagnet: String? = null,
+    driveConnected: Boolean = false,
+    onConnectDrive: () -> Unit = {},
+    driveCredentials: DriveCredentials = UnconfiguredDriveCredentials,
+    driveFolderId: String? = null
 ) {
     val context = LocalContext.current
     val scanHandler = remember { Handler(Looper.getMainLooper()) }
@@ -532,6 +538,28 @@ fun NowPlayingScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+        // Music Drive: one row, no settings screen. Connected means SAVE
+        // sends songs to the Drive folder; otherwise it lands on the
+        // phone. The button opens Google's sign-in for the music-Drive
+        // account — no password ever passes through DeanWave.
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = if (driveConnected) {
+                    "Music Drive: Connected"
+                } else {
+                    "Music Drive: Not connected"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f)
+            )
+            if (!driveConnected) {
+                Button(onClick = onConnectDrive) {
+                    Text("Connect")
+                }
+            }
+        }
         val browseSnapshot = browseResults
         if (browseSnapshot.isNotEmpty()) {
             Spacer(modifier = Modifier.height(8.dp))
@@ -885,7 +913,10 @@ fun NowPlayingScreen(
         }
 
         Spacer(modifier = Modifier.height(32.dp))
-        DownloadSection()
+        DownloadSection(
+            credentials = driveCredentials,
+            musicFolderId = driveFolderId
+        )
         Spacer(modifier = Modifier.height(16.dp))
         }
     }

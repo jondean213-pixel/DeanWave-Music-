@@ -201,55 +201,8 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
         onError: (message: String) -> Unit = {}
     ) {
         try {
-            val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir)
-                ?: run {
-                    onError("Couldn't fetch that magnet link — check the link and try again.")
-                    return
-                }
-            val torrentInfo = TorrentInfo.bdecode(metadata)
-            sessionManager.download(torrentInfo, downloadDir)
-            val handle = sessionManager.find(torrentInfo.infoHashV1())
-                ?: run {
-                    onError("Torrent added but no handle came back — try again.")
-                    return
-                }
-            val totalSize = torrentInfo.totalSize()
-            while (true) {
-                val status = try {
-                    handle.status()
-                } catch (_: Exception) {
-                    onError("Download lost its torrent — try again.")
-                    return
-                }
-                onProgress(status.totalDone(), totalSize)
-                if (status.isFinished()) break
-                val error = try {
-                    status.errorCode()
-                } catch (_: Exception) {
-                    null
-                }
-                if (error != null && error.value() != 0) {
-                    onError("Download failed: ${error.message()}")
-                    return
-                }
-                try {
-                    Thread.sleep(2000)
-                } catch (_: InterruptedException) {
-                    return
-                }
-            }
-            val torrentName = torrentInfo.name()
-            val base = File(downloadDir, torrentName)
-            val audioFiles = mutableListOf<File>()
-            if (base.isFile && base.extension.lowercase() in AUDIO_EXTENSIONS) {
-                audioFiles += base
-            } else if (base.isDirectory) {
-                collectAudio(base, 0, audioFiles)
-            }
-            if (audioFiles.isEmpty()) {
-                onError("Download finished but no audio files were found in it.")
-                return
-            }
+            val (audioFiles, base) = fetchAudioFiles(magnetUrl, onProgress, onError) ?: return
+            val torrentName = base.name
             val destDir = File(musicDir, HttpSongDownloader.sanitizeFileName(torrentName))
             destDir.mkdirs()
             val saved = mutableListOf<File>()
@@ -266,14 +219,102 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
                 onError("Download finished but nothing could be saved to your Music folder.")
                 return
             }
-            try {
-                sessionManager.remove(handle)
-            } catch (_: Exception) {
-            }
             onDone(saved)
         } catch (e: Exception) {
             onError("Download failed: ${e.message}")
         }
+    }
+
+    /**
+     * Downloads a magnet link whole into the download dir and hands the
+     * caller the audio files plus the torrent's base path, for landing
+     * elsewhere (the music Drive). The caller owns the files after
+     * [onDone] — uploading them, then deleting the base path to free
+     * the phone. Blocking; call off the main thread. A download in
+     * flight dies with the app (the session stops in onDestroy), so the
+     * status line says to keep the app open until it finishes.
+     */
+    fun downloadToCache(
+        magnetUrl: String,
+        onProgress: (doneBytes: Long, totalBytes: Long) -> Unit = { _, _ -> },
+        onDone: (audioFiles: List<File>, torrentBase: File) -> Unit,
+        onError: (message: String) -> Unit = {}
+    ) {
+        try {
+            val (audioFiles, base) = fetchAudioFiles(magnetUrl, onProgress, onError) ?: return
+            onDone(audioFiles, base)
+        } catch (e: Exception) {
+            onError("Download failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Fetches a magnet link, downloads it whole, and collects the audio
+     * files it landed in the download dir. Returns the audio files and
+     * the torrent's base path (a file when the torrent is one song, a
+     * directory when it is an album), or null after reporting the
+     * failure through [onError]. The torrent handle is removed before
+     * returning; the files stay on disk for the caller to land.
+     */
+    private fun fetchAudioFiles(
+        magnetUrl: String,
+        onProgress: (doneBytes: Long, totalBytes: Long) -> Unit,
+        onError: (message: String) -> Unit
+    ): Pair<List<File>, File>? {
+        val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir)
+            ?: run {
+                onError("Couldn't fetch that magnet link — check the link and try again.")
+                return null
+            }
+        val torrentInfo = TorrentInfo.bdecode(metadata)
+        sessionManager.download(torrentInfo, downloadDir)
+        val handle = sessionManager.find(torrentInfo.infoHashV1())
+            ?: run {
+                onError("Torrent added but no handle came back — try again.")
+                return null
+            }
+        val totalSize = torrentInfo.totalSize()
+        while (true) {
+            val status = try {
+                handle.status()
+            } catch (_: Exception) {
+                onError("Download lost its torrent — try again.")
+                return null
+            }
+            onProgress(status.totalDone(), totalSize)
+            if (status.isFinished()) break
+            val error = try {
+                status.errorCode()
+            } catch (_: Exception) {
+                null
+            }
+            if (error != null && error.value() != 0) {
+                onError("Download failed: ${error.message()}")
+                return null
+            }
+            try {
+                Thread.sleep(2000)
+            } catch (_: InterruptedException) {
+                return null
+            }
+        }
+        val torrentName = torrentInfo.name()
+        val base = File(downloadDir, torrentName)
+        val audioFiles = mutableListOf<File>()
+        if (base.isFile && base.extension.lowercase() in AUDIO_EXTENSIONS) {
+            audioFiles += base
+        } else if (base.isDirectory) {
+            collectAudio(base, 0, audioFiles)
+        }
+        if (audioFiles.isEmpty()) {
+            onError("Download finished but no audio files were found in it.")
+            return null
+        }
+        try {
+            sessionManager.remove(handle)
+        } catch (_: Exception) {
+        }
+        return audioFiles to base
     }
 
     private fun collectAudio(dir: File, depth: Int, out: MutableList<File>) {
