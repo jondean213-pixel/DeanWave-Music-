@@ -255,6 +255,11 @@ class MainActivity : ComponentActivity() {
                     },
                     onError = { message ->
                         mainHandler.post { torrentStatus = message }
+                    },
+                    onRetry = {
+                        mainHandler.post {
+                            torrentStatus = "Still looking for peers, trying again…"
+                        }
                     }
                 )
             } catch (e: Exception) {

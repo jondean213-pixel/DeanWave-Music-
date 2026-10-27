@@ -30,16 +30,35 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
     private var currentHandle: TorrentHandle? = null
     private var proxyServer: TorrentProxyServer? = null
 
+    /**
+     * Metadata fetch with retries: one 60s attempt is too little on
+     * slow or filtered wifi (field-proven: several rows in a row
+     * failed to fetch at all on library wifi that had worked hours
+     * earlier). Up to 3 attempts; [onRetry] fires before attempts 2
+     * and 3 so the screen never looks frozen.
+     */
+    private fun fetchMetadata(
+        magnetUrl: String,
+        onRetry: (() -> Unit)? = null
+    ): ByteArray? {
+        repeat(3) { attempt ->
+            sessionManager.fetchMagnet(magnetUrl, 60, downloadDir)?.let { return it }
+            if (attempt < 2) onRetry?.invoke()
+        }
+        return null
+    }
+
     fun startAudioStream(
         magnetUrl: String,
         onStreamReady: (proxyUrl: String) -> Unit,
-        onError: (message: String) -> Unit = {}
+        onError: (message: String) -> Unit = {},
+        onRetry: () -> Unit = {}
     ) {
         try {
             // 1. Fetch the torrent metadata for the magnet link, then decode it.
             // fetchMagnet blocks until metadata arrives (or times out), so call
             // this off the main thread.
-            val metadata = sessionManager.fetchMagnet(magnetUrl, 60, downloadDir)
+            val metadata = fetchMetadata(magnetUrl, onRetry)
                 ?: run {
                     onError("Couldn't fetch that magnet link — check the link and try again.")
                     return
@@ -261,7 +280,7 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
         onProgress: (doneBytes: Long, totalBytes: Long) -> Unit,
         onError: (message: String) -> Unit
     ): Pair<List<File>, File>? {
-        val metadata = sessionManager.fetchMagnet(magnetUrl, 60, downloadDir)
+        val metadata = fetchMetadata(magnetUrl)
             ?: run {
                 onError("Couldn't fetch that magnet link — check the link and try again.")
                 return null
