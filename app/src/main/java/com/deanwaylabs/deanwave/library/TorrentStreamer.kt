@@ -6,6 +6,7 @@ import com.frostwire.jlibtorrent.SessionManager
 import com.frostwire.jlibtorrent.TorrentHandle
 import com.frostwire.jlibtorrent.TorrentInfo
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Torrent streaming for DeanWave-Music-: the one addition to last night's
@@ -31,6 +32,13 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
     private var proxyServer: TorrentProxyServer? = null
 
     /**
+     * Guards the stream callbacks: every PLAY tap is its own thread,
+     * and an older tap must never overwrite a newer tap's screen.
+     * Only the latest tap's callbacks fire.
+     */
+    private val streamGeneration = AtomicInteger(0)
+
+    /**
      * Metadata fetch with retries: one 60s attempt is too little on
      * slow or filtered wifi (field-proven: several rows in a row
      * failed to fetch at all on library wifi that had worked hours
@@ -54,13 +62,26 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
         onError: (message: String) -> Unit = {},
         onRetry: () -> Unit = {}
     ) {
+        // This tap's generation: a newer PLAY tap retires this one,
+        // so a slow older tap can never overwrite the newer tap's
+        // screen with a stale error or a stale stream.
+        val myGeneration = streamGeneration.incrementAndGet()
+        val safeReady: (String) -> Unit = { url ->
+            if (streamGeneration.get() == myGeneration) onStreamReady(url)
+        }
+        val safeError: (String) -> Unit = { message ->
+            if (streamGeneration.get() == myGeneration) onError(message)
+        }
+        val safeRetry: () -> Unit = {
+            if (streamGeneration.get() == myGeneration) onRetry()
+        }
         try {
             // 1. Fetch the torrent metadata for the magnet link, then decode it.
             // fetchMagnet blocks until metadata arrives (or times out), so call
             // this off the main thread.
-            val metadata = fetchMetadata(magnetUrl, onRetry)
+            val metadata = fetchMetadata(magnetUrl, safeRetry)
                 ?: run {
-                    onError("Couldn't fetch that magnet link — check the link and try again.")
+                    safeError("Couldn't fetch that magnet link after 3 tries — check the link and try again.")
                     return
                 }
             val torrentInfo = TorrentInfo.bdecode(metadata)
@@ -70,7 +91,7 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
             sessionManager.download(torrentInfo, downloadDir)
             val handle = sessionManager.find(torrentInfo.infoHashV1())
                 ?: run {
-                    onError("Torrent added but no handle came back — try again.")
+                    safeError("Torrent added but no handle came back — try again.")
                     return
                 }
             currentHandle = handle
@@ -84,17 +105,17 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
             // 4. Resolve the playable file and start the proxy on it.
             val torrentFile = handle.torrentFile()
                 ?: run {
-                    onError("Torrent has no file info yet — try again.")
+                    safeError("Torrent has no file info yet — try again.")
                     return
                 }
             val streamFile = resolveStreamFile(torrentFile.name())
                 ?: run {
-                    onError("No playable audio file found in that torrent yet.")
+                    safeError("No playable audio file found in that torrent yet.")
                     return
                 }
             val totalSize = torrentFile.totalSize()
             if (totalSize <= 0) {
-                onError("Torrent reports no size — try again.")
+                safeError("Torrent reports no size — try again.")
                 return
             }
             val pieceLength = torrentFile.pieceLength().toLong()
@@ -117,9 +138,9 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
             proxyServer = proxy
 
             // 5. Return the REAL localhost proxy URL that ExoPlayer can play from.
-            onStreamReady(proxy.url)
+            safeReady(proxy.url)
         } catch (e: Exception) {
-            onError("Stream failed: ${e.message}")
+            safeError("Stream failed: ${e.message}")
         }
     }
 
@@ -282,7 +303,7 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
     ): Pair<List<File>, File>? {
         val metadata = fetchMetadata(magnetUrl)
             ?: run {
-                onError("Couldn't fetch that magnet link — check the link and try again.")
+                onError("Couldn't fetch that magnet link after 3 tries — check the link and try again.")
                 return null
             }
         val torrentInfo = TorrentInfo.bdecode(metadata)
