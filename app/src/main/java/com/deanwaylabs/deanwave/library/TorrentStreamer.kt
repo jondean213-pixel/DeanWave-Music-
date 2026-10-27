@@ -39,7 +39,7 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
             // 1. Fetch the torrent metadata for the magnet link, then decode it.
             // fetchMagnet blocks until metadata arrives (or times out), so call
             // this off the main thread.
-            val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir)
+            val metadata = sessionManager.fetchMagnet(magnetUrl, 60, downloadDir)
                 ?: run {
                     onError("Couldn't fetch that magnet link — check the link and try again.")
                     return
@@ -261,7 +261,7 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
         onProgress: (doneBytes: Long, totalBytes: Long) -> Unit,
         onError: (message: String) -> Unit
     ): Pair<List<File>, File>? {
-        val metadata = sessionManager.fetchMagnet(magnetUrl, 30, downloadDir)
+        val metadata = sessionManager.fetchMagnet(magnetUrl, 60, downloadDir)
             ?: run {
                 onError("Couldn't fetch that magnet link — check the link and try again.")
                 return null

@@ -50,7 +50,12 @@ class TorrentSearchClient {
             "udp://tracker.openbittorrent.com:80",
             "udp://tracker.leechers-paradise.org:6969/announce",
             "udp://tracker.internetwarriors.net:1337/announce",
-            "udp://9.rarbg.to:2710/announce"
+            "udp://9.rarbg.to:2710/announce",
+            // HTTP twins of the first two: same trackers over regular
+            // web traffic, so a magnet still finds peers on wifi that
+            // blocks UDP (libraries, public hotspots).
+            "http://tracker.opentrackr.org:1337/announce",
+            "http://tracker.openbittorrent.com:80/announce"
         )
 
         /** The window on launch: a broad music query, liveliest first. */

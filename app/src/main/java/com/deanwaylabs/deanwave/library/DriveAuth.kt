@@ -105,17 +105,32 @@ class DriveAuth(private val context: Context) {
      * landed and were saved; false leaves the previous state untouched.
      * Call off the main thread — the token exchange is network I/O.
      */
+    /** Why the last sign-in failed, in plain words. Null when it worked. */
+    var lastSignInError: String? = null
+        private set
+
     fun handleSignInResult(data: Intent?): Boolean {
-        val response = data?.let { AuthorizationResponse.fromIntent(it) } ?: return false
+        val response = data?.let { AuthorizationResponse.fromIntent(it) } ?: run {
+            lastSignInError = "no sign-in response came back"
+            return false
+        }
         val error = net.openid.appauth.AuthorizationException.fromIntent(data)
-        if (error != null) return false
+        if (error != null) {
+            lastSignInError = error.errorDescription ?: error.message ?: "sign-in error"
+            return false
+        }
         val latch = CountDownLatch(1)
         var ok = false
         service().performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
             if (tokenResponse != null && exception == null) {
                 val state = AuthState(response, tokenResponse, null)
                 saveState(state)
+                lastSignInError = null
                 ok = true
+            } else {
+                lastSignInError = exception?.errorDescription
+                    ?: exception?.message
+                    ?: "token swap failed"
             }
             latch.countDown()
         }

@@ -87,8 +87,10 @@ class MainActivity : ComponentActivity() {
                         }
                     } else {
                         mainHandler.post {
-                            browseStatus = "Music Drive sign-in didn't finish — " +
-                                "try Connect again."
+                            val why = driveAuth.lastSignInError
+                            browseStatus = "Music Drive sign-in didn't finish" +
+                                (if (why != null) " — $why" else "") +
+                                ". Try Connect again."
                         }
                     }
                 } catch (e: Exception) {

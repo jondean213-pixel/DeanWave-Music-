@@ -542,6 +542,14 @@ fun NowPlayingScreen(
                 color = MaterialTheme.colorScheme.onSurface
             )
         }
+        if (torrentStatus.isNotEmpty()) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                text = torrentStatus,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
         // Music Drive: one row, no settings screen. Connected means SAVE
         // sends songs to the Drive folder; otherwise it lands on the
         // phone. The button opens Google's sign-in for the music-Drive
@@ -892,14 +900,6 @@ fun NowPlayingScreen(
             }
         ) {
             Text("STREAM TORRENT")
-        }
-        if (torrentStatus.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                text = torrentStatus,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurface
-            )
         }
 
         lyrics?.let { loaded ->
