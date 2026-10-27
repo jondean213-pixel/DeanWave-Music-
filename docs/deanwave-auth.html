@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>DeanWave sign-in — returning to the app</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+</head>
+<body>
+<p>Signing you back into DeanWave…</p>
+<script>
+  // Google Web-client bounce page for DeanWave Drive sign-in.
+  // Google sends the user here with ?code=… (or ?error=…).
+  // Forward the whole query string, untouched, to the app's custom scheme,
+  // which AppAuth is already listening on (see DriveAuth.kt REDIRECT_URI
+  // and build.gradle.kts appAuthRedirectScheme).
+  // The Pages URL of THIS file is the Authorized redirect URI registered
+  // on the new Web-application OAuth client in the DeanWave project.
+  var target = "com.deanwaylabs.deanwave:/oauth2redirect" + window.location.search;
+  window.location.replace(target);
+</script>
+<noscript>
+<p>JavaScript is needed to return to DeanWave. Please go back and try again.</p>
+</noscript>
+</body>
+</html>
