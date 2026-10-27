@@ -13,9 +13,6 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
-        // AppAuth's redirect receiver listens on this scheme: the app's
-        // own package, so Google's sign-in returns to DeanWave.
-        manifestPlaceholders["appAuthRedirectScheme"] = "com.deanwaylabs.deanwave"
     }
 
     buildFeatures {
@@ -86,9 +83,11 @@ dependencies {
     implementation("com.frostwire:jlibtorrent-android-x86:2.0.12.9")
     implementation("com.frostwire:jlibtorrent-android-x86_64:2.0.12.9")
 
-    // Google sign-in for the music Drive (AppAuth, no Google client
-    // library — the uploader speaks raw Drive v3 over HTTP already).
-    implementation("net.openid:appauth:0.11.1")
+    // Google sign-in for the music Drive (the sign-in kit only — the
+    // uploader speaks raw Drive v3 over HTTP already). No client
+    // secret anywhere: installed apps authenticate by package +
+    // fingerprint.
+    implementation("com.google.android.gms:play-services-auth:20.7.0")
 
     // DeanWave sound engine (our DSP blueprint)
     implementation(project(":dsp"))

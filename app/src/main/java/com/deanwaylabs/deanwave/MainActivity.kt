@@ -14,6 +14,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.deanwaylabs.deanwave.library.DriveAuth
@@ -168,7 +170,19 @@ class MainActivity : ComponentActivity() {
         Thread {
             try {
                 val built = future.get()
-                mainHandler.post { controller = built }
+                mainHandler.post {
+                    controller = built
+                    // Surface player errors on screen: a stream failure
+                    // used to sit silent (loaded, play button dead, no
+                    // message), because nothing listened for it.
+                    built.addListener(object : Player.Listener {
+                        override fun onPlayerError(error: PlaybackException) {
+                            mainHandler.post {
+                                torrentStatus = "Player error: ${error.message}"
+                            }
+                        }
+                    })
+                }
             } catch (_: Exception) {
                 // Controller failed to connect: the screen stays inert
                 // (null controller) instead of crashing.

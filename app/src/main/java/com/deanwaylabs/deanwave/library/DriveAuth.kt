@@ -1,81 +1,71 @@
 package com.deanwaylabs.deanwave.library
 
+import android.accounts.Account
 import android.content.Context
 import android.content.Intent
-import android.net.Uri
+import com.google.android.gms.auth.GoogleAuthUtil
+import com.google.android.gms.auth.UserRecoverableAuthException
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.google.android.gms.common.api.Scope
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
-import java.util.concurrent.CountDownLatch
-import java.util.concurrent.TimeUnit
-import net.openid.appauth.AuthState
-import net.openid.appauth.AuthorizationRequest
-import net.openid.appauth.AuthorizationResponse
-import net.openid.appauth.AuthorizationService
-import net.openid.appauth.AuthorizationServiceConfiguration
-import net.openid.appauth.ResponseTypeValues
 import org.json.JSONObject
 
 /**
- * The music-Drive sign-in, wired to Jon's music-Drive account.
+ * The music-Drive sign-in, via Google's own sign-in kit
+ * (play-services-auth) — no AppAuth, no client secret anywhere: not
+ * in the app, not in the repo, not in CI. Installed apps authenticate
+ * by package + release fingerprint (the Android OAuth client already
+ * in the DeanWave Cloud project), so there is nothing secret to store.
  *
- * The Google side is already done (Cloud console, project DeanWave):
- * an Android OAuth client for package com.deanwaylabs.deanwave with
- * this app's release fingerprint. The client ID below is a public app
- * identifier, not an account, email, or token — it is safe to ship in
- * the app, and it is how Google recognizes DeanWave at sign-in.
- *
- * Flow (AppAuth, no Google client library — the same no-new-Google-lib
- * rule the uploader follows):
- * 1. The app opens Google's sign-in page for the drive.file scope
+ * Flow:
+ * 1. The app opens Google's sign-in screen for the drive.file scope
  *    (per-file access only: the app touches only files it creates).
  *    Jon signs in as his music-Drive account on Google's own screen —
  *    no password ever passes through DeanWave.
- * 2. Google returns an authorization code; AppAuth exchanges it for an
- *    access token + refresh token. The tokens live in the app's
- *    private preferences (no other app can read them; this phone is
- *    not rooted). A later hardening step can move them to encrypted
- *    preferences; the seam ([DriveCredentials]) does not change.
- * 3. [freshTokenBlocking] hands the uploader a live access token,
- *    refreshing silently when the old one expires. The uploader calls
- *    it on a background thread already, so the blocking wait is safe.
+ * 2. The signed-in account's email is saved in the app's private
+ *    preferences. Tokens are NOT stored: [freshTokenBlocking] asks
+ *    Google's token service for a live one each time, which refreshes
+ *    silently when the old one expires.
+ * 3. [freshTokenBlocking] hands the uploader a live access token.
+ *    The uploader calls it on a background thread already, so the
+ *    blocking wait is safe.
  *
  * The music folder ("DeanWave Music") is found or created once per
  * sign-in via the Drive API, so songs land in one tidy folder instead
  * of the Drive root.
  *
+ * This replaced an AppAuth build whose Web client demanded a client
+ * secret at token time — a secret Google no longer lets anyone view
+ * again once created, which stranded the sign-in behind a browser
+ * session that could not reach the repo owner's GitHub account.
+ *
  * Blocking where noted; call those off the main thread.
  */
 object DriveAuthConfig {
-    const val CLIENT_ID =
-        "790446424712-9rk9mkviglviiamk5jn3rjijcfr8oj16.apps.googleusercontent.com"
-    const val REDIRECT_URI = "https://jondean213-pixel.github.io/DeanWave-Music-/deanwave-auth.html"
     const val SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
     const val MUSIC_FOLDER_NAME = "DeanWave Music"
-
-    val SERVICE_CONFIG = AuthorizationServiceConfiguration(
-        Uri.parse("https://accounts.google.com/o/oauth2/v2/auth"),
-        Uri.parse("https://oauth2.googleapis.com/token")
-    )
 }
 
 class DriveAuth(private val context: Context) {
     companion object {
         private const val PREFS = "drive_auth"
-        private const val KEY_STATE = "auth_state"
+        private const val KEY_ACCOUNT = "account_email"
         private const val KEY_FOLDER_ID = "music_folder_id"
+        // Left over from the retired AppAuth build; ignored now, and
+        // cleared on sign-out so nothing stale lingers.
+        private const val KEY_STATE = "auth_state"
     }
 
     private val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-    private var authService: AuthorizationService? = null
-
-    private fun service(): AuthorizationService {
-        return authService ?: AuthorizationService(context).also { authService = it }
-    }
 
     fun isConnected(): Boolean {
+        val email = prefs.getString(KEY_ACCOUNT, null) ?: return false
         return try {
-            restoreState()?.isAuthorized == true
+            GoogleSignIn.getLastSignedInAccount(context)?.email == email
         } catch (_: Exception) {
             false
         }
@@ -83,77 +73,72 @@ class DriveAuth(private val context: Context) {
 
     /** The sign-in page intent. Launch it; the result comes back to [handleSignInResult]. */
     fun signInIntent(): Intent {
-        val request = AuthorizationRequest.Builder(
-            DriveAuthConfig.SERVICE_CONFIG,
-            DriveAuthConfig.CLIENT_ID,
-            ResponseTypeValues.CODE,
-            Uri.parse(DriveAuthConfig.REDIRECT_URI)
-        )
-            .setScope(DriveAuthConfig.SCOPE_DRIVE_FILE)
-            // Always show Google's account chooser. The sign-in window
-            // can carry a different session than the browser's active
-            // account (field-proven: Chrome on deanjon6529, the window
-            // still opened jondean213), so never trust the default —
-            // make Jon pick the music account every time.
-            .setPrompt("select_account")
+        val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestEmail()
+            .requestScopes(Scope(DriveAuthConfig.SCOPE_DRIVE_FILE))
             .build()
-        return service().getAuthorizationRequestIntent(request)
+        return GoogleSignIn.getClient(context, options).signInIntent
     }
 
     /**
-     * Completes sign-in from the returning intent. True when tokens
-     * landed and were saved; false leaves the previous state untouched.
-     * Call off the main thread — the token exchange is network I/O.
+     * Completes sign-in from the returning intent. True when the
+     * account landed and was saved; false leaves the previous state
+     * untouched. Call off the main thread.
      */
     /** Why the last sign-in failed, in plain words. Null when it worked. */
     var lastSignInError: String? = null
         private set
 
     fun handleSignInResult(data: Intent?): Boolean {
-        val response = data?.let { AuthorizationResponse.fromIntent(it) } ?: run {
+        if (data == null) {
             lastSignInError = "no sign-in response came back"
             return false
         }
-        val error = net.openid.appauth.AuthorizationException.fromIntent(data)
-        if (error != null) {
-            lastSignInError = error.errorDescription ?: error.message ?: "sign-in error"
-            return false
-        }
-        val latch = CountDownLatch(1)
-        var ok = false
-        service().performTokenRequest(response.createTokenExchangeRequest()) { tokenResponse, exception ->
-            if (tokenResponse != null && exception == null) {
-                val state = AuthState(response, tokenResponse, null)
-                saveState(state)
-                lastSignInError = null
-                ok = true
-            } else {
-                lastSignInError = exception?.errorDescription
-                    ?: exception?.message
-                    ?: "token swap failed"
+        return try {
+            val account = GoogleSignIn.getSignedInAccountFromIntent(data)
+                .getResult(ApiException::class.java)
+            val email = account.email ?: run {
+                lastSignInError = "sign-in returned no account"
+                return false
             }
-            latch.countDown()
+            prefs.edit().putString(KEY_ACCOUNT, email).remove(KEY_FOLDER_ID).apply()
+            lastSignInError = null
+            true
+        } catch (e: ApiException) {
+            lastSignInError = e.message ?: "sign-in failed (code ${e.statusCode})"
+            false
+        } catch (e: Exception) {
+            lastSignInError = e.message ?: "sign-in failed"
+            false
         }
-        latch.await(60, TimeUnit.SECONDS)
-        return ok
     }
 
     fun signOut() {
-        prefs.edit().remove(KEY_STATE).remove(KEY_FOLDER_ID).apply()
+        try {
+            val options = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
+            GoogleSignIn.getClient(context, options).signOut()
+        } catch (_: Exception) {
+        }
+        prefs.edit().remove(KEY_ACCOUNT).remove(KEY_STATE).remove(KEY_FOLDER_ID).apply()
     }
 
     /** A live access token, refreshing silently when expired. Null when not signed in. */
     fun freshTokenBlocking(): String? {
-        val state = restoreState() ?: return null
-        val latch = CountDownLatch(1)
-        var token: String? = null
-        state.performActionWithFreshTokens(service()) { accessToken, _, exception ->
-            if (exception == null) token = accessToken
-            saveState(state)
-            latch.countDown()
+        val email = prefs.getString(KEY_ACCOUNT, null) ?: return null
+        return try {
+            GoogleAuthUtil.getToken(
+                context,
+                Account(email, "com.google"),
+                "oauth2:${DriveAuthConfig.SCOPE_DRIVE_FILE}"
+            )
+        } catch (e: UserRecoverableAuthException) {
+            // Drive access needs one more approval: the next Connect
+            // tap re-runs sign-in and re-grants the scope.
+            lastSignInError = "Drive access needs one more approval — tap Connect again"
+            null
+        } catch (_: Exception) {
+            null
         }
-        latch.await(60, TimeUnit.SECONDS)
-        return token
     }
 
     /** The music folder id, found or created once and then cached. Null on any failure. */
@@ -205,23 +190,6 @@ class DriveAuth(private val context: Context) {
                 .optString("id").takeIf { it.isNotEmpty() }
         } catch (_: Exception) {
             null
-        }
-    }
-
-    private fun restoreState(): AuthState? {
-        val json = prefs.getString(KEY_STATE, null) ?: return null
-        return try {
-            AuthState.jsonDeserialize(json)
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    private fun saveState(state: AuthState) {
-        try {
-            prefs.edit().putString(KEY_STATE, state.jsonSerializeString()).apply()
-        } catch (_: Exception) {
-            // A failed save means the next launch signs in again — never a crash.
         }
     }
 }
