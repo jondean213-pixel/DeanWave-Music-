@@ -14,8 +14,13 @@ import java.net.SocketTimeoutException
  *
  * Design (small, dependency-free — java.net only):
  * - Binds to 127.0.0.1 on an ephemeral port (port 0). Loopback only, so
- *   nothing on the network can reach it, and Android's cleartext policy
- *   exempts loopback — no manifest flag needed.
+ *   nothing on the network can reach it. The player reaches it over
+ *   plain http, which this app permits ONLY for 127.0.0.1 via
+ *   res/xml/network_security_config.xml — field-proven 2026-10-27:
+ *   without that file ExoPlayer fails every stream with
+ *   ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED, because the default config
+ *   blocks cleartext even to loopback on this phone. Do not remove
+ *   that file or "simplify" it away.
  * - Range requests (206 Partial Content) are the normal path: ExoPlayer
  *   seeks and streams in ranges. A requested range is served only once
  *   every piece it overlaps is downloaded ([isAvailable] checks

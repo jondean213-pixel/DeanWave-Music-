@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Lets the player reach the torrent proxy on the phone itself.
+     The proxy serves over plain http on loopback (127.0.0.1) only.
+     Field-proven 2026-10-27: without this, ExoPlayer fails every
+     stream with ERROR_CODE_IO_CLEARTEXT_NOT_PERMITTED, because this
+     app's default config blocks cleartext even to loopback.
+     Nothing else is opened up: only 127.0.0.1 is permitted. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+    </domain-config>
+</network-security-config>
