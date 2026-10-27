@@ -39,10 +39,9 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
     private val streamGeneration = AtomicInteger(0)
 
     /**
-     * Metadata fetch with retries: one 60s attempt is too little on
-     * slow or filtered wifi (field-proven: several rows in a row
-     * failed to fetch at all on library wifi that had worked hours
-     * earlier). Up to 3 attempts; [onRetry] fires before attempts 2
+     * Metadata fetch with retries: one 60s attempt is too little
+     * (field-proven: several rows in a row failed to fetch at all,
+     * then worked later). Up to 3 attempts; [onRetry] fires before attempts 2
      * and 3 so the screen never looks frozen.
      */
     private fun fetchMetadata(
@@ -75,6 +74,9 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
         val safeRetry: () -> Unit = {
             if (streamGeneration.get() == myGeneration) onRetry()
         }
+        // Retire the previous stream (if any): its proxy stops so a
+        // new tap never inherits a stale localhost server.
+        try { stopAudioStream() } catch (_: Exception) { }
         try {
             // 1. Fetch the torrent metadata for the magnet link, then decode it.
             // fetchMagnet blocks until metadata arrives (or times out), so call
@@ -94,15 +96,23 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
                     safeError("Torrent added but no handle came back — try again.")
                     return
                 }
-            currentHandle = handle
+            if (streamGeneration.get() == myGeneration) {
+                currentHandle = handle
+            } else {
+                // Retired while fetching: drop this handle, don't
+                // let it overwrite the newer tap's stream.
+                try { sessionManager.remove(handle) } catch (_: Exception) { }
+                return
+            }
 
-            // 3. Force the head of the file to download first: deadlines on the
-            // first pieces pull them ahead of the rest (libtorrent's streaming
-            // mechanism — piece deadlines, not a sequential flag, which this
-            // libtorrent version no longer offers as a handle method).
-            prioritizeStartingPieces()
-
-            // 4. Resolve the playable file and start the proxy on it.
+            // 3. Resolve the playable file and start the proxy on it.
+            // The proxy serves ONE file, so it must be told that
+            // file's size and offset inside the torrent — NOT the
+            // whole torrent's size. The old code passed the torrent
+            // total while serving one file's bytes: on multi-file
+            // torrents the player was promised bytes past the file's
+            // end, and piece checks read the wrong pieces. ExoPlayer
+            // reports that mismatch as a Source error.
             val torrentFile = handle.torrentFile()
                 ?: run {
                     safeError("Torrent has no file info yet — try again.")
@@ -113,19 +123,45 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
                     safeError("No playable audio file found in that torrent yet.")
                     return
                 }
-            val totalSize = torrentFile.totalSize()
-            if (totalSize <= 0) {
+            val storage = torrentFile.files()
+            var fileOffset = 0L
+            var fileSize = streamFile.length()
+            run {
+                // Pass 1: exact path match under the torrent's folder.
+                for (i in 0 until storage.numFiles()) {
+                    val entryPath = storage.filePath(i).replace('\\', '/')
+                    if (streamFile.absolutePath.replace('\\', '/').endsWith("/$entryPath")) {
+                        fileOffset = storage.fileOffset(i)
+                        fileSize = storage.fileSize(i)
+                        return@run
+                    }
+                }
+                // Pass 2: file-name match (single-file torrents, or
+                // a layout that doesn't mirror the entry path).
+                for (i in 0 until storage.numFiles()) {
+                    if (streamFile.name == storage.fileName(i)) {
+                        fileOffset = storage.fileOffset(i)
+                        fileSize = storage.fileSize(i)
+                        return@run
+                    }
+                }
+            }
+            if (fileSize <= 0) {
                 safeError("Torrent reports no size — try again.")
                 return
             }
             val pieceLength = torrentFile.pieceLength().toLong()
             val numPieces = torrentFile.numPieces()
+            // The proxy speaks FILE coordinates (0..fileSize); the
+            // handle speaks TORRENT coordinates, so translate.
             val isAvailable: (Long, Long) -> Boolean = { start, end ->
+                val tStart = start + fileOffset
+                val tEnd = end + fileOffset
                 if (pieceLength <= 0 || numPieces <= 0) {
                     false
                 } else {
-                    val firstPiece = (start / pieceLength).toInt()
-                    val lastPiece = minOf((end / pieceLength).toInt(), numPieces - 1)
+                    val firstPiece = (tStart / pieceLength).toInt()
+                    val lastPiece = minOf((tEnd / pieceLength).toInt(), numPieces - 1)
                     if (firstPiece > lastPiece) {
                         false
                     } else {
@@ -133,23 +169,37 @@ class TorrentStreamer(private val sessionManager: SessionManager, private val do
                     }
                 }
             }
-            val proxy = TorrentProxyServer(streamFile, totalSize, isAvailable)
+            // Force the head of THIS file to download first: deadlines
+            // on its first pieces pull them ahead of the rest.
+            prioritizeStartingPieces(fileOffset, pieceLength)
+            val proxy = TorrentProxyServer(streamFile, fileSize, isAvailable)
             proxy.start()
-            proxyServer = proxy
+            if (streamGeneration.get() == myGeneration) {
+                proxyServer = proxy
+            } else {
+                // Retired mid-start: don't leak the server.
+                try { proxy.stop() } catch (_: Exception) { }
+                return
+            }
 
-            // 5. Return the REAL localhost proxy URL that ExoPlayer can play from.
+            // 4. Return the REAL localhost proxy URL that ExoPlayer can play from.
             safeReady(proxy.url)
         } catch (e: Exception) {
             safeError("Stream failed: ${e.message}")
         }
     }
 
-    private fun prioritizeStartingPieces() {
+    private fun prioritizeStartingPieces(fileOffset: Long, pieceLength: Long) {
         val handle = currentHandle ?: return
         val totalPieces = handle.torrentFile()?.numPieces() ?: return
-
-        // Push deadlines on the initial tracks to skip initial buffering lag
-        for (i in 0 until minOf(10, totalPieces)) {
+        if (pieceLength <= 0) return
+        // Deadlines on THIS file's first pieces (libtorrent's streaming
+        // mechanism — piece deadlines, not a sequential flag, which this
+        // libtorrent version no longer offers as a handle method).
+        // The old code deadlined the torrent's first pieces, which are
+        // another file's head on a multi-file torrent.
+        val firstPiece = (fileOffset / pieceLength).toInt()
+        for (i in firstPiece until minOf(firstPiece + 10, totalPieces)) {
             handle.setPieceDeadline(i, 1000)
         }
     }
