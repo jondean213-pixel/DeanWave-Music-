@@ -48,7 +48,7 @@ import org.json.JSONObject
  */
 object DriveAuthConfig {
     const val CLIENT_ID =
-        "790446424712-tkdt3g1ekae3ahh6tsbu93clmvsv75g1.apps.googleusercontent.com"
+        "790446424712-f8im1rt7hdhiskkm5dnb0ujf6hqabntp.apps.googleusercontent.com"
     const val REDIRECT_URI = "com.deanwaylabs.deanwave:/oauth2redirect"
     const val SCOPE_DRIVE_FILE = "https://www.googleapis.com/auth/drive.file"
     const val MUSIC_FOLDER_NAME = "DeanWave Music"
