@@ -20,6 +20,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -67,10 +68,17 @@ fun loadEmbeddedArtwork(context: Context, uriString: String): Bitmap? {
  * DeanWave mark placeholder from the theme concept. Art decodes on a
  * background thread (no new dependencies: plain Thread + main handler),
  * and a disposed composition never receives the result.
+ *
+ * [coverArt] fills the gap streams leave: a torrent stream's URI is the
+ * localhost proxy URL, which has no embedded picture, so the caller may
+ * pass art looked up by artist + title (the same lookup the browse rows
+ * use). Priority is embedded first (the file's true art), then
+ * [coverArt], then the placeholder — never a fabricated picture.
  */
 @Composable
 fun CenteredAlbumArt(
     uriString: String?,
+    coverArt: ImageBitmap? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -101,10 +109,10 @@ fun CenteredAlbumArt(
             .border(2.dp, MaterialTheme.colorScheme.primary),
         contentAlignment = Alignment.Center
     ) {
-        val art = artwork
+        val art = artwork?.asImageBitmap() ?: coverArt
         if (art != null) {
             Image(
-                bitmap = art.asImageBitmap(),
+                bitmap = art,
                 contentDescription = "Album art",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.size(280.dp)

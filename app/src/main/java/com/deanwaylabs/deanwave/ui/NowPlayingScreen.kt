@@ -303,6 +303,38 @@ fun NowPlayingScreen(
     // The tagline shown with no track is not an artist — never look it up.
     val bioArtistName = if (currentItem == null) "" else artist
 
+    // Player art: a torrent stream's URI is the proxy URL, which has no
+    // embedded picture, so the gold frame would show only the mark.
+    // Look the art up the same way the browse rows do — by artist +
+    // title through CoverArtClient (cached, so a row that already
+    // showed its thumb costs no second network call). "Magnet link"
+    // is MainActivity's fallback artist, never a real artist — never
+    // send it to the lookup.
+    val (parsedArtist, parsedTitle) = TorrentSearchClient.parseArtistTitle(title)
+    val lookupArtist = parsedArtist.ifEmpty {
+        if (artist == "Magnet link") "" else artist
+    }
+    var playerArt by remember { mutableStateOf<ImageBitmap?>(null) }
+    DisposableEffect(title, artist) {
+        val disposed = AtomicBoolean(false)
+        val handler = Handler(Looper.getMainLooper())
+        playerArt = null
+        var thread: Thread? = null
+        if (currentItem != null && title != "No track selected") {
+            thread = Thread {
+                val art = CoverArtClient.lookupArtwork(lookupArtist, parsedTitle)
+                if (!disposed.get() && art != null) {
+                    handler.post { playerArt = art.asImageBitmap() }
+                }
+            }
+            thread.start()
+        }
+        onDispose {
+            disposed.set(true)
+            thread?.interrupt()
+        }
+    }
+
     // Lyrics load on track change, on a background thread.
     DisposableEffect(artUri) {
         val disposed = AtomicBoolean(false)
@@ -384,7 +416,7 @@ fun NowPlayingScreen(
                     .fillMaxWidth()
                     .height(380.dp)
             )
-            CenteredAlbumArt(uriString = artUri)
+            CenteredAlbumArt(uriString = artUri, coverArt = playerArt)
         }
         Spacer(modifier = Modifier.height(16.dp))
 
