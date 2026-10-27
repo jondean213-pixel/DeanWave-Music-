@@ -175,10 +175,17 @@ class MainActivity : ComponentActivity() {
                     // Surface player errors on screen: a stream failure
                     // used to sit silent (loaded, play button dead, no
                     // message), because nothing listened for it.
+                    // The bare message is often just "Source error" —
+                    // useless on its own — so show the error code name
+                    // and the cause chain too: that names the real
+                    // failure (network, timeout, parse, ...) instead
+                    // of hiding it behind the generic message.
                     built.addListener(object : Player.Listener {
                         override fun onPlayerError(error: PlaybackException) {
                             mainHandler.post {
-                                torrentStatus = "Player error: ${error.message}"
+                                val causeText = generateCauseText(error.cause)
+                                torrentStatus =
+                                    "Player error: ${error.message} [${error.errorCodeName}]$causeText"
                             }
                         }
                     })
@@ -221,6 +228,26 @@ class MainActivity : ComponentActivity() {
             }
         }.start()
     }
+    /**
+     * Renders an exception's cause chain for the status line, so a
+     * generic player message ("Source error") still names the real
+     * failure underneath it (HTTP code, timeout, parse failure...).
+     */
+    private fun generateCauseText(cause: Throwable?): String {
+        val parts = mutableListOf<String>()
+        var current = cause
+        var depth = 0
+        while (current != null && depth < 3) {
+            val message = current.message
+            if (!message.isNullOrBlank() && message != "Source error") {
+                parts.add(message)
+            }
+            current = current.cause
+            depth++
+        }
+        return if (parts.isEmpty()) "" else " · " + parts.joinToString(" · ")
+    }
+
     private fun streamMagnet(magnet: String, displayName: String = "Torrent stream") {
         torrentStatus = "Finding the torrent…"
         Thread {
